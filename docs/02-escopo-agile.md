@@ -167,7 +167,7 @@ gantt
     section Obrigatório
     I2 Wallets + schema                      :done, i2, after i1, 14
     I3 Processamento HTTP + métricas         :done, i3, after i2, 38
-    I4 Outbox                                :i4, after i3, 11
+    I4 Outbox                                :done, i4, after i3, 11
     I5 SQS + referências pendentes           :i5, after i4, 24
     I6 Concorrência e crash (§13)            :i6, after i5, 11
     I7 Documentação de entrega               :i7, after i6, 5
@@ -181,12 +181,14 @@ gantt
 | **I1** ✅ | E1-1..6 + política de retry (§7.1) | Domínio provado por testes | 208 testes de unidade, teste de arquitetura |
 | **I2** ✅ | E2-1..4 | Wallets persistidas com constraints | criar/consultar wallet com eventos do `OPENING`; `UPDATE` no ledger falha |
 | **I3** ✅ | E3-1..9, **E7-1** | Transações via HTTP corretas sob concorrência, já medidas | 2× `BET 80`, 50 requisições idênticas, `/metrics` com status, duplicatas e conflitos de lock |
-| **I4** | E4-1..3 | Eventos confiáveis | processo morto entre commit e publish; evento chega; métrica de outbox lag |
+| **I4** ✅ | E4-1..3 | Eventos confiáveis | processo morto entre commit e publish; evento chega; métrica de outbox lag |
 | **I5** | E5-1..4, E6-1..3 | Fila e fora de ordem | `ROLLBACK` antes da `BET` resolve sozinho; métricas de retries e DLQ |
 | **I6** | E8-1, E8-2, E7-3 | Todos os testes de concorrência do §13 | ≥ 3 processos, crash após commit/antes do ack, reinício |
 | **I7** | E9-1..3 | Entregável completo | README + ARCHITECTURE revisados; conformidade 100% |
 | **I8** | E2-5, E4-4, E7-4..9, E8-3, E8-4 | Diferenciais | `test:load`, Grafana, e-mail de incidente, antifraude |
 
+> **I4 entregue:** publisher da outbox com claim por lease + `FOR UPDATE SKIP LOCKED`, `SendMessageBatch` (grupo = wallet, dedup = `eventId`), retry com backoff sem descarte, recuperação após crash, métricas de lag/publicação/retry — 82 testes de integração, 212 de unidade.
+>
 > **I3 entregue:** `POST /wagering/transactions` com lock por wallet, idempotência (replay com saldo da época, conflitos 409), fluxo único de reversão, `PENDING_REFERENCE`, trilha de auditoria append-only, consultas, métricas do §12 e testes de concorrência CT-01/02/03/10/12 — 77 testes de integração.
 >
 > **I2 entregue:** schema com todas as garantias no banco (inclui cadeia do ledger e consistência saldo × ledger no commit), `POST /wallets` com `OPENING` e eventos na outbox, consultas, ledger paginado, reconciliação e `/metrics` — 43 testes de integração.

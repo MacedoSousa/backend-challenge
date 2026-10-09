@@ -4,24 +4,24 @@
 >
 > Legenda: ✅ feito e testado · 🟡 planejado (iteração) · ⚠️ interpretação documentada · ➖ opcional, fora do obrigatório
 
-**Última revisão:** fim da Iteração 3 — 208 testes de unidade, 77 de integração (Postgres e LocalStack reais), incluindo concorrência real.
+**Última revisão:** fim da Iteração 4 — 212 testes de unidade, 82 de integração (Postgres e LocalStack reais), incluindo concorrência real e publicação concorrente da outbox.
 
 ## Resumo
 
 | § | Tema | Situação |
 |---|---|---|
-| 1 | Visão geral | ✅ correção, concorrência e idempotência via HTTP · 🟡 mensageria (I4, I5) |
+| 1 | Visão geral | ✅ correção, concorrência, idempotência e publicação de eventos · 🟡 consumo SQS (I5) |
 | 2 | Autenticação | ✅ decisão + ponto de extensão · 🟡 validação da identidade na fila (I5) |
 | 3 | Contexto do domínio (at-least-once) | 🟡 cenários mapeados para testes |
 | 4 | Stack | ✅ |
-| 5 | Restrições invioláveis | ✅ 1, 2, 3, 5, 6, 7, 8, 9 · 🟡 4 (publicação após commit — I4) |
+| 5 | Restrições invioláveis | ✅ todas as 9 |
 | 6 | Modelo de domínio | ✅ · 🟡 inbox na mesma transação (I5) |
 | 7 | Regras de negócio, referências, failure codes | ✅ via HTTP · 🟡 worker de pendências (I5) |
 | 8 | Concorrência | ✅ CT-01, CT-02, CT-03, CT-10, CT-12 (1 instância) + prova manual com 3 réplicas · 🟡 CT-04 automatizado (I6) |
 | 9 | API HTTP | ✅ |
 | 10 | SQS | ✅ topologia e DLQ · 🟡 consumidor (I5) |
-| 11 | Outbox e eventos | ✅ eventos gravados na mesma transação · 🟡 publisher (I4) |
-| 12 | Observabilidade | ✅ logs, health, métricas de transações, duplicatas, locks, latência, erros · 🟡 outbox lag (I4), retries e DLQ (I5) |
+| 11 | Outbox e eventos | ✅ |
+| 12 | Observabilidade | ✅ logs, health, métricas de transações, duplicatas, locks, latência, erros, outbox lag e retries da outbox · 🟡 retries do consumidor e DLQ (I5) |
 | 13 | Testes obrigatórios | ✅ unidade, constraints, atomicidade, concorrência 1–3 · 🟡 mensageria e multi-processo |
 | 14 | Avaliação / documentação | ✅ README, ARCHITECTURE em dia |
 
@@ -33,7 +33,7 @@
 | Concorrência entre múltiplas instâncias | lock por wallet (ADR-03); 3 réplicas no Compose: 20 BETs de 30.00 sobre 100.00 → 3 aprovadas | ✅ manual · 🟡 CT-04 automatizado (I6) |
 | Idempotência persistente | `UNIQUE` + snapshot de saldo + replay/conflito sob o lock da wallet | ✅ |
 | Consistência saldo × ledger | `Wallet` devolve o lançamento; cadeia e consistência verificadas no banco (triggers) | ✅ |
-| Processamento assíncrono e recuperação | inbox, outbox, worker, DLQ | 🟡 I4, I5 |
+| Processamento assíncrono e recuperação | outbox com lease (I4) ✅; consumidor, worker, DLQ (I5) | ✅ outbox · 🟡 I5 |
 | Clareza das decisões | ARCHITECTURE.md (30 ADRs), docs/01 §6 (20 decisões) | ✅ |
 
 ## §2 Autenticação
@@ -54,9 +54,9 @@
 | Dependente antes da referência | UT-T15, UT-R01..R05 ✅; CT-07 | ✅ domínio · 🟡 I5 |
 | Várias instâncias na mesma wallet | CT-02, CT-12 (1 instância) ✅; CT-04, CT-09 (multi-processo) | ✅ · 🟡 I6 |
 | Processo morre antes/depois do commit | IT-07 (falha antes do commit: zero rastro) ✅; CT-05, CT-08 | ✅ antes · 🟡 depois (I4–I6) |
-| Eventos publicados mais de uma vez | IT-16, CT-06 | 🟡 I4 |
-| Postgres e SQS indisponíveis | IT-21 ✅; IT-13, IT-17 | ✅ health · 🟡 I4, I5 |
-| **Invariantes:** sem crédito/débito duplicado, sem perder evento, sem saldo negativo | CT-01, CT-02, CT-10, CT-12, IT-02, IT-06 ✅; perda de evento (I4) | ✅ · 🟡 I4 |
+| Eventos publicados mais de uma vez | `outbox.spec.ts` (crash após publicar: republicação com o mesmo `eventId`) | ✅ |
+| Postgres e SQS indisponíveis | IT-21 (Postgres) ✅; IT-17 (SQS na publicação) ✅; consumidor (I5) | ✅ · 🟡 I5 |
+| **Invariantes:** sem crédito/débito duplicado, sem perder evento, sem saldo negativo | CT-01, CT-02, CT-10, CT-12, IT-02, IT-06, IT-16, crash da outbox | ✅ |
 
 ## §4 Stack
 
@@ -79,7 +79,7 @@
 | 1 | Sem `number`/`float` para dinheiro | `Money` com `bigint`; `NUMERIC(20,2)` | teste de arquitetura (proíbe `parseFloat`, `Number(`, `toFixed`…) | ✅ |
 | 2 | Idempotência não em memória | `UNIQUE (idempotency_key)`, `UNIQUE (provider_id, external_transaction_id)`; inbox na I5 | IT-09, IT-10, IT-27, CT-01 | ✅ |
 | 3 | Não confiar só no FIFO | banco é a garantia final (D-08, ADR-10) | CT-01, CT-02 sem fila envolvida | ✅ |
-| 4 | Evento só após commit | outbox na mesma transação (ADR-09) | IT-07, CT-05 | 🟡 I4 |
+| 4 | Evento só após commit | outbox gravada na transação; publisher lê só o que foi commitado (ADR-09) | IT-07, IT-18, `outbox.spec.ts` | ✅ |
 | 5 | Ledger sem sobrescrita/exclusão | `WalletLedgerEntry` congelado; triggers recusam `UPDATE`, `DELETE` e `TRUNCATE` | UT-L02, IT-03 | ✅ |
 | 6 | Sem lock global | lock por linha de wallet (ADR-03) | CT-03 | ✅ |
 | 7 | Sem `read → calculate → update` sem controle | `SELECT … FOR UPDATE` + `CHECK` + trigger de consistência | CT-02, CT-12 | ✅ |
@@ -197,8 +197,8 @@ Adaptações de assinatura: [ARCHITECTURE.md → Adaptações](../ARCHITECTURE.m
 | Requisito | Onde | Teste | Situação |
 |---|---|---|---|
 | Atomicidade transação + saldo + ledger + inbox + evento | `UnitOfWork` | IT-07 (falha injetada antes do commit) | ✅ · 🟡 inbox (I5) |
-| Worker com múltiplos publishers, sem perder nem duplicar indefinidamente | claim com lease + `SKIP LOCKED` (ADR-09); retry sem limite (docs/03 §9.1) | IT-16, CT-06 | 🟡 I4 |
-| Commit → processo morre → outra instância publica → duplicata segura | idem | CT-05, CT-06 | 🟡 I4 |
+| Worker com múltiplos publishers, sem perder nem duplicar indefinidamente | claim com lease + `SKIP LOCKED`; retry sem limite; marca só se o lease é seu | IT-16 (2 publishers, 60 eventos, 0 duplicatas) + Compose (3 réplicas, 40/40 únicos) | ✅ |
+| Commit → processo morre → outra instância publica → duplicata segura | lease expira; `MessageDeduplicationId = eventId` | `outbox.spec.ts` (falha injetada após publicar) + unidade | ✅ |
 | `WagerTransactionProcessed` (inclusive `LOSS` e `OPENING`) | evento + use cases | `messaging.spec.ts`, IT-08, `transactions.spec.ts` (LOSS) | ✅ |
 | `WagerTransactionRejected` | evento + `WagerProcessor` | `transactions.spec.ts` | ✅ |
 | `WalletBalanceChanged` **somente** quando o saldo muda | `WagerProcessor` | UT-E01, `transactions.spec.ts` (LOSS e REJECTED sem o evento) | ✅ |
@@ -215,7 +215,7 @@ Adaptações de assinatura: [ARCHITECTURE.md → Adaptações](../ARCHITECTURE.m
 | … com `messageId`, `transactionId`, `walletId`, `providerId` | auditoria grava todos; `enrichContext` nos logs do consumidor | — | ✅ auditoria · 🟡 logs do consumidor (I5) |
 | Sem dados sensíveis nem payload financeiro completo | `REDACT_PATHS` | E7-3 | ✅ · 🟡 teste I6 |
 | Métricas: transações por status, duplicatas, conflitos de lock, latência | `wagering_transactions_total`, `wagering_duplicates_detected_total`, `wagering_lock_wait_seconds`, `wagering_lock_conflicts_total`, `wagering_lock_timeouts_total`, `wagering_processing_duration_seconds`, `wagering_errors_total` | `transactions.spec.ts` | ✅ |
-| Métricas: outbox lag | idem | IT (I4) | 🟡 I4 |
+| Métricas: outbox lag | `wagering_outbox_lag_seconds`, `wagering_outbox_published_total`, `wagering_retries_total{component="outbox"}` | `outbox.spec.ts` | ✅ |
 | Métricas: retries, mensagens em DLQ | idem | IT (I5) | 🟡 I5 |
 | Health live e ready separados | `health.module.ts` | IT-21 | ✅ |
 | OpenTelemetry, dashboard | docs/06 | — | ➖ I8 |
@@ -232,9 +232,9 @@ Adaptações de assinatura: [ARCHITECTURE.md → Adaptações](../ARCHITECTURE.m
 | **Integração:** migrations e constraints | IT-01..06 + `schema.spec.ts` | ✅ |
 | Integração: atomicidade wallet/ledger/inbox/outbox | IT-07 | ✅ · 🟡 inbox (I5) |
 | Integração: inbox e redelivery | IT-12 | 🟡 I5 |
-| Integração: publishers concorrentes | IT-16 | 🟡 I4 |
+| Integração: publishers concorrentes | IT-16 | ✅ |
 | Integração: retry e DLQ | IT-13..15 | 🟡 I5 |
-| Integração: recuperação após reinício | IT-18 | 🟡 I4 |
+| Integração: recuperação após reinício | IT-18 (eventos gravados com o publisher parado são publicados quando ele sobe) | ✅ |
 | **Concorrência 1:** mesma aposta 50× em paralelo | CT-01 | ✅ |
 | Concorrência 2: saldo disputado | CT-02, CT-12 | ✅ |
 | Concorrência 3: wallets distintas | CT-03 | ✅ |
@@ -263,6 +263,6 @@ Adaptações de assinatura: [ARCHITECTURE.md → Adaptações](../ARCHITECTURE.m
 | Débito ou crédito duplicado | `UNIQUE` de idempotência + índice de reversão única + CT-01, CT-10 ✅ (inbox na I5) |
 | Idempotência só em memória | não existe cache; tudo no banco |
 | Correta só com uma instância | Compose com 3 réplicas desde a I0 + CT-04 |
-| Evento antes do commit | outbox (I4) + CT-05 |
+| Evento antes do commit | outbox na transação + publisher assíncrono (I4) + IT-07, IT-18 ✅ |
 | Ledger sem auditoria | ledger imutável + trilha `wager_transaction_audit` (todo lançamento tem 1 auditoria — IT-25) ✅ |
 | Testes só com mocks | Testcontainers com Postgres e LocalStack reais desde a I0 ✅ |

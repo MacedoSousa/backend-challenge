@@ -46,6 +46,11 @@ const envSchema = z.object({
   DB_LOCK_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(5_000),
   DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(100).max(120_000).default(10_000),
 
+  /** Publisher da outbox (ADR-09): lote, intervalo de varredura e duração do lease. */
+  OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(50),
+  OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(10).max(60_000).default(500),
+  OUTBOX_LEASE_MS: z.coerce.number().int().min(100).max(600_000).default(30_000),
+
   /** Pontos de falha injetada (só respeitados com NODE_ENV=test). Ex.: "wager.before-commit". */
   FAULT_POINTS: z.string().default(''),
 });

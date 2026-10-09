@@ -2,7 +2,7 @@
 
 Serviço financeiro distribuído que processa transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) de múltiplos provedores, com correção sob duplicidade, entrega fora de ordem e concorrência entre instâncias.
 
-> 🚧 **Status:** Iterações 0 a 3 concluídas: fundação, domínio puro em TDD (208 testes de unidade), schema com garantias no banco e API completa de wallets e transações com idempotência, concorrência por wallet e auditoria (77 testes de integração). Próxima: I4 — publicação da outbox. Conformidade com o enunciado em [docs/07](./docs/07-conformidade.md). Próxima: Iteração 2 — persistência das wallets. Ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações).
+> 🚧 **Status:** Iterações 0 a 4 concluídas: fundação, domínio puro em TDD, schema com garantias no banco, API de wallets e transações com idempotência, concorrência por wallet e auditoria, e publicação confiável da outbox (212 testes de unidade, 82 de integração). Próxima: I5 — consumidor SQS e referências pendentes. Conformidade com o enunciado em [docs/07](./docs/07-conformidade.md). Próxima: Iteração 2 — persistência das wallets. Ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações).
 
 ## Stack
 
@@ -80,7 +80,7 @@ Chegam nas próximas iterações: `test:concurrency` (I3/I6), `test:load` (I6) e
 
 ## Configuração
 
-Toda a configuração vem de variáveis de ambiente, validadas no boot (`src/config/env.ts`; falha rápido com a lista de erros). Principais: `DATABASE_URL`, `DB_POOL_MAX`, `AWS_ENDPOINT_URL`, `APP_ROLE` (`api,consumer,outbox,scheduler,notifier` ou `all`), `LOG_LEVEL`, `PORT`.
+Toda a configuração vem de variáveis de ambiente, validadas no boot (`src/config/env.ts`; falha rápido com a lista de erros). Principais: `DATABASE_URL`, `DB_POOL_MAX`, `AWS_ENDPOINT_URL`, `APP_ROLE` (`api,consumer,outbox,scheduler,notifier` ou `all`), `LOG_LEVEL`, `PORT`, `DB_LOCK_TIMEOUT_MS`, `OUTBOX_BATCH_SIZE`, `OUTBOX_POLL_INTERVAL_MS`, `OUTBOX_LEASE_MS`. Eventos de integração são publicados em `wagering-events.fifo` (grupo = wallet, deduplicação = `eventId`).
 
 > Alertas chegarão por e-mail no Mailpit sem configurar nada. Para usar um SMTP real, copie `.env.example` para `.env` e preencha. O `.env` nunca é versionado.
 
