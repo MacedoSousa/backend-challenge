@@ -23,7 +23,7 @@
 | 11 | Outbox e eventos | ✅ |
 | 12 | Observabilidade | ✅ logs JSON com correlationId/messageId/transactionId/walletId/providerId, health e todas as métricas exigidas |
 | 13 | Testes obrigatórios | ✅ |
-| 14 | Avaliação / documentação | ✅ README, ARCHITECTURE em dia |
+| 14 | Avaliação / documentação | ✅ README (setup, roteiro, comandos, guia para avaliação), ARCHITECTURE (30 ADRs, fluxo, trade-offs, limitações) · ➖ teste de carga (I8) |
 
 ## §1 Visão geral
 
@@ -250,8 +250,8 @@ Adaptações de assinatura: [ARCHITECTURE.md → Adaptações](../ARCHITECTURE.m
 
 | Item | Situação |
 |---|---|
-| `README.md` com setup e comandos | ✅ (atualizado a cada iteração) |
-| `ARCHITECTURE.md` com decisões, trade-offs e limitações | ✅ 30 ADRs, adaptações, escalabilidade, limitações |
+| `README.md` com setup e comandos | ✅ setup em 3 comandos, roteiro copiável (HTTP e SQS), testes e o que provam, configuração, guia para avaliação — validado num clone limpo |
+| `ARCHITECTURE.md` com decisões, trade-offs e limitações | ✅ 30 ADRs, fluxo de ponta a ponta, adaptações das assinaturas, escalabilidade com a situação de cada medida, limitações por categoria |
 | Teste de carga `bun run test:load` com relatório | ➖ I8 (ST-01..08 planejados) |
 
 **Falhas eliminatórias — onde cada uma é barrada:**
