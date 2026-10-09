@@ -2,7 +2,7 @@
 
 Serviço financeiro distribuído que processa transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) de múltiplos provedores, com correção sob duplicidade, entrega fora de ordem e concorrência entre instâncias.
 
-> 🚧 **Status:** Iterações 0 (fundação) e 1 (domínio puro em TDD: `Money`, `Wallet`, ledger, `WagerTransaction`, `ReferencePolicy`, `ReferenceRetryPolicy`, eventos, inbox/outbox — 208 testes de unidade) concluídas. Conformidade com o enunciado em [docs/07](./docs/07-conformidade.md). Próxima: Iteração 2 — persistência das wallets. Ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações).
+> 🚧 **Status:** Iterações 0 (fundação), 1 (domínio puro em TDD — 208 testes de unidade) e 2 (schema com garantias no banco, API de wallets, ledger, reconciliação, `/metrics` — 43 testes de integração) concluídas. Conformidade com o enunciado em [docs/07](./docs/07-conformidade.md). Próxima: Iteração 2 — persistência das wallets. Ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações).
 
 ## Stack
 
@@ -44,6 +44,19 @@ AWS_ENDPOINT_URL=http://localhost:4566 bun src/setup.ts      # migrations + fila
 DATABASE_URL=postgres://wagering:wagering@localhost:5432/wagering \
 AWS_ENDPOINT_URL=http://localhost:4566 PORT=3100 bun run start:dev
 ```
+
+## API disponível
+
+| Método | Rota | Descrição |
+|---|---|---|
+| `POST` | `/wallets` | cria wallet (`{ playerId, initialBalance: { amount: "1000.00", currency: "BRL" } }`); saldo > 0 gera `OPENING` + `CREDIT` + eventos |
+| `GET` | `/wallets/:walletId` | consulta a wallet |
+| `GET` | `/wallets/:walletId/ledger?cursor=…&limit=50` | ledger paginado por cursor opaco (máx. 200) |
+| `POST` | `/wallets/:walletId/reconciliation` | saldo armazenado × reconstruído pelo ledger |
+| `GET` | `/health/live`, `/health/ready` | liveness e readiness (Postgres + SQS) |
+| `GET` | `/metrics` | métricas Prometheus **da réplica que respondeu** (colete cada instância) |
+
+Valores monetários são sempre strings com exatamente 2 casas (`"25.00"`). Erros seguem RFC 9457 (`application/problem+json`) com `failureCode` estável e `correlationId`.
 
 ## Comandos
 

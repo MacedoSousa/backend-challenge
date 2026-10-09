@@ -88,6 +88,8 @@ Prefixo `wagering_`. **As tags nunca incluem** `walletId`, `playerId`, `transact
 | `consumer_utilization` | gauge | — | fração dos slots de consumo ocupados (consumo parado × capacidade insuficiente) |
 | `db_pool_in_use` | gauge | — | conexões em uso no pool (saturação do banco) |
 
+**Coleta por instância:** cada réplica expõe seus próprios contadores em `/metrics`. O Prometheus deve coletar cada instância (no Compose, via DNS do serviço `app`), nunca pelo balanceador — por ele, cada coleta cai numa réplica diferente (ADR-28).
+
 O volume financeiro (soma de valores) **não** vira métrica, porque métricas usam ponto flutuante. Ele vem de SQL exato sobre o ledger (§6).
 
 ## 4. Traces (código)
