@@ -1,5 +1,25 @@
 # 06 — Observabilidade (100% gratuita e local)
 
+## 0. O que está implementado (fim da Iteração 8)
+
+| Peça | Situação |
+|---|---|
+| Logs JSON (pino) com `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId` e mascaramento | ✅ (obrigatório §12) |
+| Métricas Prometheus em `/metrics` por instância (§3) | ✅ (obrigatório §12) |
+| Health `live` / `ready` | ✅ (obrigatório §12) |
+| Perfil `observability`: Prometheus (descobre cada réplica pelo DNS), `postgres-exporter`, Grafana com fonte Prometheus e PostgreSQL **somente leitura** | ✅ diferencial |
+| Dashboards "Operação" e "Auditoria financeira" provisionados (§6) | ✅ diferencial |
+| 14 alertas por severidade com e-mail no Mailpit e políticas de reenvio (§7) | ✅ diferencial |
+| OpenTelemetry (traces, §4) | ➖ não implementado: o SDK tem suporte parcial no Bun; as métricas e os logs correlacionados cobrem o §12 |
+| Relatório de incidente enriquecido por e-mail (§8: análise, último cliente, gargalo) | ➖ desenho pronto, não implementado; hoje o e-mail é o template nativo do Grafana com o resumo do alerta |
+
+```bash
+docker compose --profile observability up -d
+# Grafana   http://localhost:3001  (admin/admin; leitura anônima liberada)
+# Mailpit   http://localhost:8025  (e-mails de alerta)
+# Prometheus http://localhost:9090/targets  (uma linha por réplica)
+```
+
 ## 1. Requisitos
 
 - **Gratuito e open source:** o repositório é público. Quem clonar precisa rodar tudo sem conta, sem chave e sem cartão.
@@ -169,9 +189,15 @@ Três níveis, cada um com uma política de envio diferente para evitar fadiga d
 
 | Nível | Significado | Envio | Reenvio enquanto ativo |
 |---|---|---|---|
-| 🔴 **Crítico** | risco financeiro ou serviço parado | imediato | a cada 30 min |
-| 🟠 **Médio** | degradação ou exige ação operacional | imediato, agrupado (30 s) | a cada 2 h |
-| 🟢 **Leve** | anomalia sem impacto imediato | **resumo consolidado a cada 1 h** | não reenvia; entra no próximo resumo |
+| 🔴 **Crítico** | risco financeiro ou serviço parado | imediato (~10 s) | a cada 30 min |
+| 🟠 **Médio** | degradação ou exige ação operacional | imediato (~30 s) | a cada 2 h |
+| 🟢 **Leve** | anomalia sem impacto imediato | imediato (~1 min) | a cada 1 h |
+
+> **Todo alerta novo avisa na primeira ocorrência**; a severidade só define a frequência de
+> reenvio enquanto ele continua ativo. A versão anterior mandava os leves num *resumo horário*
+> agrupado por severidade: um alerta leve novo, que entrava num grupo já aberto, podia esperar
+> até 1 h — a suíte de evidências (cenário A07) pegou isso. Agrupamento atual:
+> `[alertname, severity]` (`provisioning/alerting/contact-points.yml`).
 
 | Alerta | Condição | Nível |
 |---|---|---|
@@ -179,7 +205,7 @@ Três níveis, cada um com uma política de envio diferente para evitar fadiga d
 | Banco indisponível | `/health/ready` falhando por Postgres em ≥ 2 instâncias por 1 min | 🔴 crítico |
 | Outbox parada | `outbox_lag_seconds` > 300 | 🔴 crítico |
 | **Aumento de fila** (forte) | `queue_depth{queue="wager-transactions"}` cresce por 10 min **e** > 1.000 | 🔴 crítico |
-| DLQ recebendo | `dlq_messages_total` aumentou | 🟠 médio |
+| DLQ recebendo | `dlq_messages_total` aumentou **ou** `queue_depth{queue="wager_dlq"}` > 0 (a profundidade vê também o redrive feito pelo SQS; o alerta fica ativo até a DLQ ser tratada) | 🟠 médio |
 | Reversão sem saldo | `reversals_total{outcome="insufficient_funds"}` > 0 | 🟠 médio |
 | **Atraso** de processamento | p95 de `processing_duration_seconds` > 1 s por 5 min | 🟠 médio |
 | **Atraso** na fila | p95 de `queue_wait_seconds` > 30 s por 5 min | 🟠 médio |

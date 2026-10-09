@@ -23,7 +23,7 @@
 | 11 | Outbox e eventos | ✅ |
 | 12 | Observabilidade | ✅ logs JSON com correlationId/messageId/transactionId/walletId/providerId, health e todas as métricas exigidas |
 | 13 | Testes obrigatórios | ✅ |
-| 14 | Avaliação / documentação | ✅ README (setup, roteiro, comandos, guia para avaliação), ARCHITECTURE (30 ADRs, fluxo, trade-offs, limitações) · ➖ teste de carga (I8) |
+| 14 | Avaliação / documentação | ✅ README (setup, roteiro, comandos, guia para avaliação), ARCHITECTURE (30 ADRs, fluxo, trade-offs, limitações) · ✅ teste de carga com relatório (I8) |
 
 ## §1 Visão geral
 
@@ -112,6 +112,7 @@ Adaptações de assinatura: [ARCHITECTURE.md → Adaptações](../ARCHITECTURE.m
 | 6.3 Terminal → `InvalidTransactionStateError` (erro de programação) | idem | UT-T05 | ✅ |
 | 6.3 Transições válidas definidas e documentadas | docs/05 §5 + `TRANSITIONS` | UT-T04, UT-T05 | ✅ |
 | 6.3 `OPENING` não entra por API/fila | `create()` recusa; `createOpening()` interno | UT-T03 | ✅ |
+| 6.3 `FAILED` = erro permanente de infraestrutura, terminal e auditável | consumidor: última recepção com erro transitório → `FAILED INFRA_RETRIES_EXHAUSTED` + auditoria + evento + DLQ; replay HTTP → 500 | `consumer.spec.ts` (div. 1, I8) | ✅ (até a I7 o estado existia, mas nunca era produzido — docs/08) |
 | 6.3 Mesma key com payload diferente = conflito | `matchesPayload` + use case | UT-T08, IT-10, IT-27 | ✅ |
 | **6.4** Lançamento sem campos mutáveis nem transições | `wallet-ledger-entry.ts` (congelado) | UT-L02 | ✅ |
 | 6.4 `create` valida a aritmética | idem | UT-L01 | ✅ |
@@ -201,6 +202,8 @@ Adaptações de assinatura: [ARCHITECTURE.md → Adaptações](../ARCHITECTURE.m
 | Commit → processo morre → outra instância publica → duplicata segura | lease expira; `MessageDeduplicationId = eventId` | `outbox.spec.ts` + CT-06 (`SIGKILL` real do publisher, 2 sobreviventes, 40/40 eventos) | ✅ |
 | `WagerTransactionProcessed` (inclusive `LOSS` e `OPENING`) | evento + use cases | `messaging.spec.ts`, IT-08, `transactions.spec.ts` (LOSS) | ✅ |
 | `WagerTransactionRejected` | evento + `WagerProcessor` | `transactions.spec.ts` | ✅ |
+| `WagerTransactionFailed` (extra, I8) | `FAILED INFRA_RETRIES_EXHAUSTED` na última recepção da fila | `consumer.spec.ts` (div. 1) | ✅ |
+| `WagerOperationRejected` (extra, I8) | conflito de idempotência ou wallet inexistente **pela fila** (sem transação própria) | `failure-paths.spec.ts`, `consumer.spec.ts` (div. 5) | ✅ |
 | `WalletBalanceChanged` **somente** quando o saldo muda | `WagerProcessor` | UT-E01, `transactions.spec.ts` (LOSS e REJECTED sem o evento) | ✅ |
 | `WagerTransactionPendingReference` | evento + `WagerProcessor` | `transactions.spec.ts` | ✅ |
 | Envelope em classe abstrata, uma subclasse por evento | `integration-event.ts` | UT-E01 | ✅ |
@@ -218,7 +221,9 @@ Adaptações de assinatura: [ARCHITECTURE.md → Adaptações](../ARCHITECTURE.m
 | Métricas: outbox lag | `wagering_outbox_lag_seconds`, `wagering_outbox_published_total`, `wagering_retries_total{component="outbox"}` | `outbox.spec.ts` | ✅ |
 | Métricas: retries, mensagens em DLQ | `wagering_retries_total{component}`, `wagering_dlq_messages_total{reason}`, `wagering_queue_wait_seconds`, `wagering_pending_references` | `consumer.spec.ts`, `outbox.spec.ts` | ✅ |
 | Health live e ready separados | `health.module.ts` | IT-21 | ✅ |
-| OpenTelemetry, dashboard | docs/06 | — | ➖ I8 |
+| Dashboard e alertas (diferencial) | perfil `observability`: Prometheus, Grafana (2 dashboards, 14 alertas), Mailpit | `test:e2e` (6), `test:evidence` A01–A11 | ✅ I8 |
+| Retenção de inbox/outbox | `RetentionWorker` (papel `scheduler`) | IT-26 | ✅ I8 |
+| OpenTelemetry (traces) | — | — | ❌ fora (suporte parcial no Bun; correlação via `correlationId`) |
 
 ## §13 Testes obrigatórios
 
@@ -252,7 +257,8 @@ Adaptações de assinatura: [ARCHITECTURE.md → Adaptações](../ARCHITECTURE.m
 |---|---|
 | `README.md` com setup e comandos | ✅ setup em 3 comandos, roteiro copiável (HTTP e SQS), testes e o que provam, configuração, guia para avaliação — validado num clone limpo |
 | `ARCHITECTURE.md` com decisões, trade-offs e limitações | ✅ 30 ADRs, fluxo de ponta a ponta, adaptações das assinaturas, escalabilidade com a situação de cada medida, limitações por categoria |
-| Teste de carga `bun run test:load` com relatório | ➖ I8 (ST-01..08 planejados) |
+| Teste de carga `bun run test:load` com relatório | ✅ I8 — [docs/load-test-report.md](./load-test-report.md) |
+| Evidências em vídeo de todos os cenários | ✅ I8 — `bun run test:evidence` (22 cenários, console + tela) |
 
 **Falhas eliminatórias — onde cada uma é barrada:**
 

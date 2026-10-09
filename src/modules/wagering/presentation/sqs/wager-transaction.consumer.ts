@@ -25,7 +25,7 @@ import {
   METRICS,
   type Metrics,
 } from '../../../../shared/application/ports';
-import { DomainError } from '../../../../shared/domain/domain-error';
+import { DomainError, InvariantViolationError } from '../../../../shared/domain/domain-error';
 import {
   enrichContext,
   runWithContext,
@@ -55,9 +55,11 @@ class PermanentMessageError extends Error {
  * Consumidor de `wager-transactions.fifo` (papel `consumer`, §10):
  * - reutiliza o mesmo use case da API (`executeFromQueue`), com inbox na mesma transação;
  * - ack (`DeleteMessage`) **só depois do commit**;
- * - negócio → ack; transitório → backoff de visibilidade (o redrive leva à DLQ após
- *   `maxReceiveCount`); permanente → DLQ imediata;
- * - mensagens de grupos diferentes em paralelo, do mesmo grupo em ordem;
+ * - negócio → ack; transitório → backoff de visibilidade; na última recepção, registra a
+ *   operação como `FAILED INFRA_RETRIES_EXHAUSTED` e a manda à DLQ; permanente ou bug → DLQ
+ *   imediata;
+ * - mensagens de grupos diferentes em paralelo; do mesmo grupo, em ordem — uma falha
+ *   transitória devolve também as seguintes do grupo, sem processá-las;
  * - `SIGTERM`: para de receber, conclui o que está em andamento e devolve o resto.
  */
 @Injectable()
@@ -151,19 +153,29 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
     }
     await Promise.all(
       [...groups.values()].map(async (group) => {
+        let retryInSeconds: number | undefined;
         for (const message of group) {
+          if (retryInSeconds !== undefined) {
+            // FIFO: a anterior do grupo voltou para a fila; esta não pode passar na frente dela
+            await this.changeVisibility(urls.main, message, retryInSeconds);
+            continue;
+          }
           if (!this.running) {
             // shutdown: não iniciadas voltam para a fila imediatamente
             await this.changeVisibility(urls.main, message, 0);
             continue;
           }
-          await this.handle(message, urls);
+          retryInSeconds = await this.handle(message, urls);
         }
       }),
     );
   }
 
-  private async handle(message: Message, urls: { main: string; dlq: string }): Promise<void> {
+  /** Devolve o atraso, em segundos, quando a mensagem voltou para a fila (falha transitória). */
+  private async handle(
+    message: Message,
+    urls: { main: string; dlq: string },
+  ): Promise<number | undefined> {
     const receiveCount = Number.parseInt(message.Attributes?.ApproximateReceiveCount ?? '1', 10);
     const sentAt = Number.parseInt(message.Attributes?.SentTimestamp ?? '0', 10);
     if (sentAt > 0) this.metrics.queueWait(Math.max(0, (Date.now() - sentAt) / 1000));
@@ -173,10 +185,11 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
       envelope = parse(message.Body);
     } catch (error) {
       const reason = error instanceof PermanentMessageError ? error.reason : 'invalid_message';
-      return this.toDlq(message, urls, reason);
+      await this.toDlq(message, urls, reason);
+      return undefined;
     }
 
-    await runWithContext(
+    return runWithContext<Promise<number | undefined>>(
       { correlationId: envelope.messageId, messageId: envelope.messageId },
       async () => {
         enrichContext({
@@ -196,7 +209,8 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
             },
           );
           if (outcome.kind === 'inbox_payload_mismatch') {
-            return this.toDlq(message, urls, 'inbox_payload_mismatch');
+            await this.toDlq(message, urls, 'inbox_payload_mismatch');
+            return undefined;
           }
           if (outcome.kind === 'decided' || outcome.kind === 'replay') {
             enrichContext({ transactionId: outcome.result.transactionId });
@@ -205,8 +219,9 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
           this.faults.trigger('consumer.after-commit-before-ack');
           await this.ack(urls.main, message);
           this.logger.info({ outcome: outcome.kind, component: 'consumer' }, 'message processed');
+          return undefined;
         } catch (error) {
-          await this.onError(error, message, urls, receiveCount);
+          return this.onError(error, message, envelope, urls, receiveCount);
         }
       },
     );
@@ -215,13 +230,19 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
   private async onError(
     error: unknown,
     message: Message,
+    envelope: WagerTransactionRequested,
     urls: { main: string; dlq: string },
     receiveCount: number,
-  ): Promise<void> {
+  ): Promise<number | undefined> {
     if (error instanceof InjectedFaultError) throw error; // simula queda: sem ack nem visibilidade
     if (error instanceof DomainError) {
       if (error.category === 'validation') {
-        return this.toDlq(message, urls, `invalid_payload:${error.code}`);
+        await this.toDlq(message, urls, `invalid_payload:${error.code}`);
+        return undefined;
+      }
+      if (error.category === 'permanent') {
+        await this.toDlq(message, urls, `permanent:${error.code}`);
+        return undefined;
       }
       if (error.category === 'business' || error.category === 'conflict') {
         // terminal: reenviar daria o mesmo resultado
@@ -230,10 +251,20 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
           { failureCode: error.code, component: 'consumer' },
           'business rejection acked',
         );
-        return this.ack(urls.main, message);
+        await this.ack(urls.main, message);
+        return undefined;
       }
+    } else if (isProgrammingError(error)) {
+      // bug: reprocessar daria o mesmo erro — DLQ já, para um humano olhar (divergência 3)
+      this.logger.error({ err: error, component: 'consumer' }, 'programming error: sent to DLQ');
+      await this.toDlq(message, urls, 'bug');
+      return undefined;
     }
-    // transitório (ou inesperado): volta para a fila com backoff; o redrive leva à DLQ
+    if (receiveCount >= this.env.SQS_MAX_RECEIVE_COUNT) {
+      await this.exhausted(error, message, envelope, urls, receiveCount);
+      return undefined;
+    }
+    // transitório (ou desconhecido): volta para a fila com backoff
     const delay = backoffSeconds(receiveCount);
     this.metrics.retry('consumer');
     this.logger.warn(
@@ -241,6 +272,49 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
       'transient failure: message will be retried',
     );
     await this.changeVisibility(urls.main, message, delay);
+    return delay;
+  }
+
+  /**
+   * Última recepção com erro transitório: registra `FAILED INFRA_RETRIES_EXHAUSTED` (§6.3) e
+   * manda a mensagem à DLQ pela aplicação — assim a métrica e o alerta de DLQ a veem. Se nem o
+   * registro for possível (banco fora), a mensagem vai à DLQ sem ele e pode ser reprocessada.
+   */
+  private async exhausted(
+    error: unknown,
+    message: Message,
+    envelope: WagerTransactionRequested,
+    urls: { main: string; dlq: string },
+    receiveCount: number,
+  ): Promise<void> {
+    const { idempotencyKey, ...data } = envelope.data;
+    try {
+      const result = await this.processWager.recordQueueFailure(
+        { ...data, idempotencyKey },
+        {
+          correlationId: envelope.messageId,
+          causationId: envelope.messageId,
+          messageId: envelope.messageId,
+          inbox: this.inboxFor(envelope),
+        },
+        { receiveCount, lastError: error instanceof Error ? error.name : 'unknown' },
+      );
+      if (result === 'already_decided') {
+        // decidida por outra entrega nesse meio-tempo: o efeito já existe, só confirmar
+        await this.ack(urls.main, message);
+        return;
+      }
+      this.logger.error(
+        { err: error, receiveCount, component: 'consumer', alert: 'retries_exhausted' },
+        'retries exhausted: transaction recorded as FAILED',
+      );
+    } catch (recordError) {
+      this.logger.error(
+        { err: recordError, cause: error, receiveCount, component: 'consumer' },
+        'retries exhausted and FAILED could not be recorded: message kept in DLQ only',
+      );
+    }
+    await this.toDlq(message, urls, 'retries_exhausted');
   }
 
   private inboxFor(envelope: WagerTransactionRequested): InboxMessage {
@@ -329,6 +403,17 @@ function parse(body: string | undefined): WagerTransactionRequested {
     throw new PermanentMessageError(unknownType ? 'unknown_type' : 'invalid_schema');
   }
   return result.data;
+}
+
+/**
+ * Erro de programação: reprocessar daria o mesmo resultado. Erros de sistema (com `code`, como
+ * os de rede do driver) ficam de fora — esses podem ser transitórios.
+ */
+function isProgrammingError(error: unknown): boolean {
+  if (error instanceof InvariantViolationError) return true;
+  const isJsBug =
+    error instanceof TypeError || error instanceof RangeError || error instanceof ReferenceError;
+  return isJsBug && !(error as { code?: unknown }).code;
 }
 
 /** 2ⁿ s com teto de 5 min e jitter de até 20% (docs/03 §9.1). */

@@ -1,0 +1,17 @@
+# Métricas são por instância (ADR-28): cada réplica do serviço `app` é descoberta pelo
+# DNS do Compose e coletada separadamente — nunca pelo balanceador.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: wagering
+    dns_sd_configs:
+      - names: [app]
+        type: A
+        port: 3000
+        refresh_interval: 10s
+
+  - job_name: postgres
+    static_configs:
+      - targets: ['postgres-exporter:9187']

@@ -47,7 +47,9 @@ const envSchema = z.object({
   DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(100).max(120_000).default(10_000),
 
   /** Publisher da outbox (ADR-09): lote, intervalo de varredura e duração do lease. */
-  OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(50),
+  OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
+  // SendMessageBatch simultâneos por rodada (teste de carga: em série, o lag chegou a 74 s)
+  OUTBOX_PUBLISH_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(8),
   OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(10).max(60_000).default(500),
   OUTBOX_LEASE_MS: z.coerce.number().int().min(100).max(600_000).default(30_000),
 
@@ -69,6 +71,22 @@ const envSchema = z.object({
     .int()
     .min(1)
     .default(15 * 60_000),
+
+  /**
+   * Retenção (S-2): outbox publicada e inbox processada são apagadas em lotes pelo papel
+   * `scheduler`. A inbox fica MAIS que a retenção do SQS (14 dias), para que uma reentrega
+   * tardia ainda seja reconhecida como duplicata. Ledger e auditoria nunca são apagados.
+   */
+  RETENTION_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .default(60 * 60_000),
+  RETENTION_BATCH_SIZE: z.coerce.number().int().min(1).max(10_000).default(1_000),
+  // profundidade das filas (inclui a DLQ) lida pelo papel scheduler
+  QUEUE_DEPTH_INTERVAL_MS: z.coerce.number().int().min(1_000).max(600_000).default(15_000),
+  OUTBOX_RETENTION_DAYS: z.coerce.number().min(0).default(7),
+  INBOX_RETENTION_DAYS: z.coerce.number().min(15).default(15),
 
   /** Pontos de falha injetada (só respeitados com NODE_ENV=test). Ex.: "wager.before-commit". */
   FAULT_POINTS: z.string().default(''),

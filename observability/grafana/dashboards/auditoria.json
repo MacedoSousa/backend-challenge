@@ -1,0 +1,217 @@
+{
+  "uid": "wagering-auditoria",
+  "title": "Wagering — Auditoria financeira",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "tags": [
+    "wagering"
+  ],
+  "templating": {
+    "list": [
+      {
+        "type": "textbox",
+        "name": "transactionId",
+        "label": "transactionId (linha do tempo)",
+        "query": ""
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "table",
+      "title": "Wallets inconsistentes (vazio = saudável)",
+      "description": "Saldo materializado × saldo reconstruído pelo ledger. Qualquer linha aqui é incidente crítico.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "wagering-db"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 5
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "wagering-db"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT w.id AS wallet_id, w.balance::text AS saldo, COALESCE(SUM(CASE l.direction WHEN 'CREDIT' THEN l.amount ELSE -l.amount END), 0)::numeric(20,2)::text AS ledger\nFROM wallets w LEFT JOIN wallet_ledger_entries l ON l.wallet_id = w.id\nGROUP BY w.id, w.balance\nHAVING w.balance <> COALESCE(SUM(CASE l.direction WHEN 'CREDIT' THEN l.amount ELSE -l.amount END), 0)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Volume creditado e debitado por dia (exato, NUMERIC)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "wagering-db"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "wagering-db"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT date_trunc('day', created_at)::date AS dia, currency AS moeda, direction AS direcao,\n       count(*) AS lancamentos, SUM(amount)::numeric(20,2)::text AS volume\nFROM wallet_ledger_entries WHERE $__timeFilter(created_at)\nGROUP BY 1, 2, 3 ORDER BY 1 DESC, 2, 3"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Rejeições por failureCode",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "wagering-db"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "wagering-db"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT failure_code, kind, count(*) AS total\nFROM wager_transactions WHERE status = 'REJECTED' AND $__timeFilter(created_at)\nGROUP BY 1, 2 ORDER BY 3 DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Reversões por tipo e resultado",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "wagering-db"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "wagering-db"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT t.kind, a.action, COALESCE(a.failure_code, '-') AS failure_code, count(*) AS total\nFROM wager_transaction_audit a JOIN wager_transactions t ON t.id = a.transaction_id\nWHERE t.kind IN ('REFUND', 'ROLLBACK') AND $__timeFilter(a.occurred_at)\nGROUP BY 1, 2, 3 ORDER BY 4 DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Antifraude: jogadores com mais de 5 reversões na última hora",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "wagering-db"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "wagering-db"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT player_id, count(*) AS reversoes, min(processed_at) AS primeira, max(processed_at) AS ultima\nFROM wager_transactions\nWHERE kind IN ('REFUND', 'ROLLBACK') AND status = 'PROCESSED' AND processed_at > now() - interval '1 hour'\nGROUP BY player_id HAVING count(*) > 5 ORDER BY 2 DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Linha do tempo da transação ($transactionId)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "wagering-db"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "wagering-db"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT occurred_at, action, from_status, to_status, failure_code, ledger_entry_id, related_transaction_id, source, instance_id, correlation_id, message_id\nFROM wager_transaction_audit\nWHERE transaction_id::text = ${transactionId:sqlstring}\nORDER BY occurred_at, id"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    }
+  ]
+}
