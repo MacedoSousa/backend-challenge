@@ -153,7 +153,9 @@ flowchart LR
 | CT-11 | `SIGTERM` com mensagem em voo | sinal durante o processamento | mensagem concluída e deletada, ou visibilidade devolvida; sem efeito duplo |
 | CT-12 | **gasto simultâneo do mesmo saldo** (vários aparelhos/jogos) | wallet com `100.00`; 20 `BET` simultâneas (valores variados, 5 `gameId` diferentes, keys distintas) distribuídas entre as 3 instâncias, repetido 20× | soma das aprovadas ≤ `100.00`; demais `REJECTED INSUFFICIENT_FUNDS`; saldo final = `100.00` − soma aprovada, nunca negativo; versões do ledger contíguas, sem repetição; cada `balance_before` = `balance_after` anterior. Apostas que cabem no saldo passam mesmo em paralelo (decisão: paralelismo permitido) |
 
-**Fault injection:** pontos nomeados (`after-commit-before-ack`, `after-commit-before-publish`, `before-commit`) ativados só quando `NODE_ENV=test`, via uma porta `FaultInjector` (no-op em produção).
+**Fault injection:** pontos nomeados (`wager.before-commit`, `consumer.before-process`, `consumer.after-commit-before-ack`, `outbox.after-publish-before-mark`) ativados só quando `NODE_ENV=test`, via a porta `FaultInjector` (no-op em produção). Dois modos: `ponto` lança uma exceção; `ponto:kill` faz o processo enviar `SIGKILL` para si mesmo exatamente ali — um `kill -9` real no pior momento, sem `finally` nem shutdown.
+
+**Multi-processo (`bun run test:concurrency`):** `test/concurrency/` sobe instâncias reais com `Bun.spawn` (`bun src/main.ts`), cada uma com porta, pool, workers e métricas próprios, sobre o mesmo Postgres e LocalStack. Lições de estabilidade: (1) encerrar **todas** as instâncias após cada teste (uma sobra consome as mensagens do próximo); (2) vítimas de `:kill` podem morrer antes de abrir a porta — não esperar o health delas; (3) asserções sobre *qual* instância aprovou não são determinísticas — afirmar sobre decisões auditadas de qualquer tipo.
 
 ## 6. Cenários — Stress / Carga (ST) — `bun run test:load`
 

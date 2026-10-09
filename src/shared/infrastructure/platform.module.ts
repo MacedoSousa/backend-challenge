@@ -54,23 +54,33 @@ export class InjectedFaultError extends Error {
   }
 }
 
-/** Ativo somente com NODE_ENV=test; em qualquer outro ambiente é no-op. */
+/**
+ * Ativo somente com NODE_ENV=test; em qualquer outro ambiente é no-op.
+ * `ponto` lança `InjectedFaultError`; `ponto:kill` mata o próprio processo com SIGKILL
+ * exatamente ali (sem finally, sem shutdown, sem ack) — o "kill -9" dos testes de crash.
+ */
 class EnvFaultInjector implements FaultInjector {
-  private readonly points: ReadonlySet<string>;
+  private readonly points: ReadonlyMap<string, 'throw' | 'kill'>;
 
   constructor(env: Env) {
-    this.points =
+    const entries =
       env.NODE_ENV === 'test'
-        ? new Set(
-            env.FAULT_POINTS.split(',')
-              .map((point) => point.trim())
-              .filter(Boolean),
-          )
-        : new Set();
+        ? env.FAULT_POINTS.split(',')
+            .map((point) => point.trim())
+            .filter(Boolean)
+            .map((point): [string, 'throw' | 'kill'] =>
+              point.endsWith(':kill')
+                ? [point.slice(0, -':kill'.length), 'kill']
+                : [point, 'throw'],
+            )
+        : [];
+    this.points = new Map(entries);
   }
 
   trigger(point: string): void {
-    if (this.points.has(point)) throw new InjectedFaultError(point);
+    const mode = this.points.get(point);
+    if (mode === 'kill') process.kill(process.pid, 'SIGKILL');
+    if (mode) throw new InjectedFaultError(point);
   }
 }
 

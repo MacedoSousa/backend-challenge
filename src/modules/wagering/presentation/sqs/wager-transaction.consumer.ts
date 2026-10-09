@@ -99,7 +99,9 @@ export class WagerTransactionConsumer implements OnApplicationBootstrap, BeforeA
         { component: 'consumer' },
         'shutdown timeout: in-flight messages will be redelivered',
       );
+      return;
     }
+    this.logger.warn({ component: 'consumer' }, 'consumer drained: graceful shutdown complete');
   }
 
   private async run(): Promise<void> {

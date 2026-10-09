@@ -7,7 +7,7 @@ import { currentContext } from './request-context';
  * Caminhos removidos dos logs: payloads financeiros e credenciais nunca são registrados.
  * Valores monetários devem ser logados, quando necessário, apenas via métricas/auditoria.
  */
-const REDACT_PATHS = [
+export const REDACT_PATHS = [
   'req.headers.authorization',
   'req.headers.cookie',
   '*.password',

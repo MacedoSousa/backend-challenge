@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import type { SQSClient } from '@aws-sdk/client-sqs';
+import { GetQueueAttributesCommand, type SQSClient } from '@aws-sdk/client-sqs';
 import type { SQL } from 'bun';
 import type { Env } from '../../src/config/env';
 import { createSqsClient } from '../../src/shared/infrastructure/sqs/sqs.module';
@@ -247,6 +247,42 @@ describe('consumidor SQS (§10)', () => {
     const [row] =
       await sql`SELECT balance::text AS balance FROM wallets WHERE id = ${wallet.walletId}`;
     expect(row.balance).toBe('60.00');
+  });
+
+  it('IT-07 (fila) falha antes do commit desfaz também a inbox: a reentrega é processada', async () => {
+    const wallet = await createWallet(api.url, '100.00');
+    const message = envelope(wager(wallet, { money: brl('15.00') }));
+    await send(message, wallet);
+
+    // a falha é tratada como queda (sem ack nem retry): basta o consumidor ter recebido
+    // a mensagem (ela fica invisível) e a tentativa ter terminado em rollback
+    await withConsumer(
+      async () => {
+        await waitFor(async () => {
+          const { Attributes } = await sqs.send(
+            new GetQueueAttributesCommand({
+              QueueUrl: mainUrl,
+              AttributeNames: ['ApproximateNumberOfMessagesNotVisible'],
+            }),
+          );
+          return Number(Attributes?.ApproximateNumberOfMessagesNotVisible ?? 0) >= 1;
+        });
+        await Bun.sleep(500);
+      },
+      { FAULT_POINTS: 'wager.before-commit' },
+    );
+    // rollback total: nem transação nem registro de inbox (senão a reentrega seria descartada)
+    const [inbox] = await sql`
+      SELECT count(*)::int AS n FROM inbox_messages WHERE message_id = ${message.messageId}`;
+    expect(inbox.n).toBe(0);
+    expect(await transactionsOf(wallet)).toHaveLength(0);
+
+    await withConsumer(async () => {
+      await waitFor(async () => (await transactionsOf(wallet)).length === 1 && (await drained()));
+    });
+    const [row] =
+      await sql`SELECT balance::text AS balance FROM wallets WHERE id = ${wallet.walletId}`;
+    expect(row.balance).toBe('85.00');
   });
 
   it('CT-11 SIGTERM com mensagens em andamento: nada perdido nem duplicado', async () => {

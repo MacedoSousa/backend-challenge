@@ -169,7 +169,7 @@ gantt
     I3 Processamento HTTP + métricas         :done, i3, after i2, 38
     I4 Outbox                                :done, i4, after i3, 11
     I5 SQS + referências pendentes           :done, i5, after i4, 24
-    I6 Concorrência e crash (§13)            :i6, after i5, 11
+    I6 Concorrência e crash (§13)            :done, i6, after i5, 11
     I7 Documentação de entrega               :i7, after i6, 5
     section Diferenciais
     I8 Carga, Grafana, e-mail, antifraude    :i8, after i7, 37
@@ -183,10 +183,12 @@ gantt
 | **I3** ✅ | E3-1..9, **E7-1** | Transações via HTTP corretas sob concorrência, já medidas | 2× `BET 80`, 50 requisições idênticas, `/metrics` com status, duplicatas e conflitos de lock |
 | **I4** ✅ | E4-1..3 | Eventos confiáveis | processo morto entre commit e publish; evento chega; métrica de outbox lag |
 | **I5** ✅ | E5-1..4, E6-1..3 | Fila e fora de ordem | `ROLLBACK` antes da `BET` resolve sozinho; métricas de retries e DLQ |
-| **I6** | E8-1, E8-2, E7-3 | Todos os testes de concorrência do §13 | ≥ 3 processos, crash após commit/antes do ack, reinício |
+| **I6** ✅ | E8-1, E8-2, E7-3 | Todos os testes de concorrência do §13 | ≥ 3 processos, crash após commit/antes do ack, reinício |
 | **I7** | E9-1..3 | Entregável completo | README + ARCHITECTURE revisados; conformidade 100% |
 | **I8** | E2-5, E4-4, E7-4..9, E8-3, E8-4 | Diferenciais | `test:load`, Grafana, e-mail de incidente, antifraude |
 
+> **I6 entregue:** testes com processos reais (`Bun.spawn`): 3 instâncias numa hot wallet (HTTP + SQS + duplicatas), `SIGKILL` real do consumidor após o commit e do publisher após publicar, todas as instâncias mortas sob carga e reiniciadas, `SIGTERM` gracioso — estáveis em 5 rodadas seguidas.
+>
 > **I5 entregue:** consumidor SQS com o mesmo núcleo da API, inbox na transação, ack após o commit, classificação negócio/transitório/permanente com backoff e DLQ, `SIGTERM` gracioso; worker de referências pendentes com lease, retry e expiração; contrato compartilhado HTTP/fila — 96 testes de integração.
 >
 > **I4 entregue:** publisher da outbox com claim por lease + `FOR UPDATE SKIP LOCKED`, `SendMessageBatch` (grupo = wallet, dedup = `eventId`), retry com backoff sem descarte, recuperação após crash, métricas de lag/publicação/retry — 82 testes de integração, 212 de unidade.
