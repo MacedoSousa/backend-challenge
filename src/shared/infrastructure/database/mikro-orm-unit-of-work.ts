@@ -9,6 +9,7 @@ import { type EntityManager, MikroORM } from '@mikro-orm/postgresql';
 import { Inject, Injectable } from '@nestjs/common';
 import { APP_CONFIG } from '../../../config/config.module';
 import type { Env } from '../../../config/env';
+import { InboxMessage } from '../../../modules/messaging/domain/inbox-message';
 import type { OutboxMessage } from '../../../modules/messaging/domain/outbox-message';
 import type { WagerTransaction } from '../../../modules/wagering/domain/wager-transaction';
 import type { Wallet } from '../../../modules/wallet/domain/wallet';
@@ -17,6 +18,8 @@ import { InfrastructureUnavailableError, LockTimeoutError } from '../../applicat
 import {
   type AuditEntry,
   type AuditRepository,
+  type InboxRegistration,
+  type InboxRepository,
   type LedgerPage,
   type LedgerRepository,
   type LedgerSummary,
@@ -119,6 +122,7 @@ function createScope(em: EntityManager): TransactionScope {
     transactions: new MikroOrmWagerTransactionRepository(em),
     outbox: new MikroOrmOutboxRepository(em),
     audit: new MikroOrmAuditRepository(em),
+    inbox: new SqlInboxRepository(em),
   };
 }
 
@@ -242,10 +246,59 @@ class MikroOrmWagerTransactionRepository implements WagerTransactionRepository {
     );
   }
 
+  async wakeDependents(providerId: string, externalTransactionId: string, at: Date) {
+    await this.em.execute(
+      `UPDATE wager_transactions SET next_attempt_at = ?
+        WHERE status = 'PENDING_REFERENCE'
+          AND provider_id = ? AND reference_external_transaction_id = ?
+          AND next_attempt_at > ?`,
+      [at, providerId, externalTransactionId, at],
+    );
+  }
+
   private toDomain(record: WagerTransactionRecord | null) {
     if (!record) return undefined;
     this.managed.set(record.id, record);
     return WagerTransactionMapper.toDomain(record);
+  }
+}
+
+class SqlInboxRepository implements InboxRepository {
+  constructor(private readonly em: EntityManager) {}
+
+  async register(message: InboxMessage): Promise<InboxRegistration> {
+    const inserted = await this.em.execute<{ message_id: string }[]>(
+      `INSERT INTO inbox_messages (consumer_name, message_id, payload_hash, received_at, processed_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (consumer_name, message_id) DO NOTHING
+       RETURNING message_id`,
+      [
+        message.consumerName,
+        message.messageId,
+        message.payloadHash,
+        message.receivedAt,
+        message.processedAt ?? null,
+      ],
+    );
+    if (inserted.length > 0) return { status: 'NEW' };
+
+    const [row] = await this.em.execute<
+      { payload_hash: string; received_at: string; processed_at: string | null }[]
+    >(
+      `SELECT payload_hash, received_at, processed_at FROM inbox_messages
+        WHERE consumer_name = ? AND message_id = ?`,
+      [message.consumerName, message.messageId],
+    );
+    return {
+      status: 'DUPLICATE',
+      existing: InboxMessage.rehydrate({
+        consumerName: message.consumerName,
+        messageId: message.messageId,
+        payloadHash: row?.payload_hash ?? '',
+        receivedAt: new Date(row?.received_at ?? message.receivedAt),
+        processedAt: row?.processed_at ? new Date(row.processed_at) : undefined,
+      }),
+    };
   }
 }
 

@@ -89,6 +89,9 @@ export class PrometheusMetrics implements Metrics {
   private readonly published: Counter;
   private readonly retries: Counter<'component'>;
   private readonly lag: Gauge;
+  private readonly dlqMessages: Counter<'reason'>;
+  private readonly queueWaits: Histogram;
+  private readonly pending: Gauge;
 
   constructor(@Inject(METRICS_REGISTRY) registry: Registry) {
     const registers = [registry];
@@ -160,6 +163,23 @@ export class PrometheusMetrics implements Metrics {
       help: 'Idade do evento pendente mais antigo da outbox',
       registers,
     });
+    this.dlqMessages = new Counter({
+      name: 'wagering_dlq_messages_total',
+      help: 'Mensagens enviadas à DLQ pelo consumidor, por motivo',
+      labelNames: ['reason'],
+      registers,
+    });
+    this.queueWaits = new Histogram({
+      name: 'wagering_queue_wait_seconds',
+      help: 'Tempo entre o envio da mensagem e o início do consumo',
+      buckets: [0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 300],
+      registers,
+    });
+    this.pending = new Gauge({
+      name: 'wagering_pending_references',
+      help: 'Transações aguardando a referência (PENDING_REFERENCE)',
+      registers,
+    });
   }
 
   outboxPublished(count: number): void {
@@ -172,6 +192,18 @@ export class PrometheusMetrics implements Metrics {
 
   outboxLag(seconds: number): void {
     this.lag.set(seconds);
+  }
+
+  dlq(reason: string): void {
+    this.dlqMessages.inc({ reason });
+  }
+
+  queueWait(seconds: number): void {
+    this.queueWaits.observe(seconds);
+  }
+
+  pendingReferences(count: number): void {
+    this.pending.set(count);
   }
 
   reconciliation(result: 'consistent' | 'inconsistent'): void {

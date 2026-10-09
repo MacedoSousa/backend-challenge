@@ -59,6 +59,50 @@ export class WagerProcessor {
   ) {}
 
   async decide(input: DecisionInput): Promise<DecisionOutcome> {
+    const outcome = await this.decideOnce(input);
+    if (outcome === 'PROCESSED' || outcome === 'REJECTED') await this.wakeDependents(input);
+    return outcome;
+  }
+
+  /** Worker: a referência continua ausente e ainda há tentativas (§7.1). */
+  scheduleRetry(input: DecisionInput, nextAttemptAt: Date): void {
+    const { transaction: tx } = input;
+    tx.scheduleReferenceRetry(nextAttemptAt);
+    this.audit({ ...input, walletId: input.wallet.id }, 'RETRY_SCHEDULED', {
+      transactionId: tx.id,
+      fromStatus: tx.status,
+      toStatus: tx.status,
+      details: { attempts: tx.attempts, nextAttemptAt: nextAttemptAt.toISOString() },
+    });
+  }
+
+  /** Worker: limite de tentativas ou TTL esgotado → REJECTED REFERENCE_NOT_FOUND + evento. */
+  async expire(input: DecisionInput, reason: 'MAX_ATTEMPTS' | 'TTL'): Promise<DecisionOutcome> {
+    const outcome = this.reject(
+      input,
+      input.transaction.status,
+      FailureCode.ReferenceNotFound,
+      {},
+      {
+        expiredBy: reason,
+        attempts: input.transaction.attempts,
+      },
+    );
+    await this.wakeDependents(input);
+    return outcome;
+  }
+
+  /** Pendentes que aguardavam esta transação são reavaliadas já na próxima rodada do worker. */
+  private wakeDependents(input: DecisionInput): Promise<void> {
+    const { transaction: tx } = input;
+    return input.scope.transactions.wakeDependents(
+      tx.providerId,
+      tx.externalTransactionId,
+      input.now,
+    );
+  }
+
+  private async decideOnce(input: DecisionInput): Promise<DecisionOutcome> {
     const { wallet, transaction: tx } = input;
     const fromStatus = tx.status;
 
@@ -175,6 +219,7 @@ export class WagerProcessor {
       referenceTransactionId?: string | undefined;
       relatedTransactionId?: string | undefined;
     } = {},
+    details?: Record<string, unknown>,
   ): DecisionOutcome {
     const { wallet, transaction: tx, now } = input;
     tx.reject(code, { at: now, balanceAfter: wallet.balance, ...links });
@@ -185,6 +230,7 @@ export class WagerProcessor {
       toStatus: tx.status,
       failureCode: code,
       relatedTransactionId: links.relatedTransactionId ?? links.referenceTransactionId,
+      details,
     });
     return 'REJECTED';
   }

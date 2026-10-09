@@ -10,37 +10,9 @@ import {
   GetTransactionUseCase,
 } from '../../application/transaction-queries.use-case';
 import type { WagerResultView } from '../../application/transaction-views';
-import { WagerTransactionKind } from '../../domain/wager-transaction';
+import { IdempotencyKey, WagerTransactionBody } from '../wager-contract';
 
-/** Contrato compartilhado com o consumidor SQS (mesmo schema na I5). */
-export const WagerTransactionBody = z
-  .object({
-    providerId: z.string().min(1).max(100),
-    externalTransactionId: z.string().min(1).max(200),
-    playerId: z.uuid(),
-    walletId: z.uuid(),
-    roundId: z.string().min(1).max(200),
-    gameId: z.string().min(1).max(200),
-    // OPENING é interno: não faz parte do contrato externo
-    kind: z.enum([
-      WagerTransactionKind.Bet,
-      WagerTransactionKind.Win,
-      WagerTransactionKind.Loss,
-      WagerTransactionKind.Refund,
-      WagerTransactionKind.Rollback,
-    ]),
-    money: z.object({ amount: z.string(), currency: z.string() }).strict(),
-    referenceExternalTransactionId: z.string().min(1).max(200).optional(),
-  })
-  .strict();
-
-const IdempotencyKeyHeader = z
-  .string({ error: 'header Idempotency-Key é obrigatório' })
-  .min(1)
-  .max(300)
-  .regex(/^[\x21-\x7e]+$/, 'Idempotency-Key deve conter apenas ASCII visível');
-
-const idempotencyKeyPipe = new ZodValidationPipe(IdempotencyKeyHeader);
+const idempotencyKeyPipe = new ZodValidationPipe(IdempotencyKey);
 
 const TransactionIdParam = z.uuid();
 const ProviderParam = z.string().min(1).max(100);
