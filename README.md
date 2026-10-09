@@ -10,7 +10,7 @@ Serviço financeiro distribuído que processa transações de apostas (`BET`, `W
 
 ## Rodando em 3 comandos
 
-Pré-requisito: Docker com Compose (o usuário precisa poder rodar `docker` sem `sudo`).
+Pré-requisito: Docker com Compose (o usuário precisa poder rodar `docker` sem `sudo`). Com Docker instalado via **snap** (padrão no Ubuntu), clone o projeto dentro de `/home`: o snap não enxerga `/tmp` nem pastas ocultas.
 
 ```bash
 docker compose up -d --build --wait     # Postgres, LocalStack, setup, 3 réplicas e balanceador
@@ -45,7 +45,8 @@ bet() { curl -s -w '  HTTP %{http_code}\n' -X POST $API/wagering/transactions \
 # 2. o cenário obrigatório: duas apostas de 80.00 ao mesmo tempo
 bet bet-1 80.00 & bet bet-2 80.00 & wait      # uma 201 PROCESSED, outra 422 INSUFFICIENT_FUNDS
 
-# 3. replay: mesma operação → mesma resposta, idempotentReplay: true
+# 3. replay: mesma operação → a MESMA resposta da primeira vez, com idempotentReplay: true
+#    (qual das duas venceu a corrida é aleatório: o replay repete o 201 ou o 422 original)
 bet bet-1 80.00
 
 # 4. mesma chave com outro valor → 409, nada muda
