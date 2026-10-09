@@ -2,7 +2,7 @@
 
 Serviço financeiro distribuído que processa transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) de múltiplos provedores, com correção sob duplicidade, entrega fora de ordem e concorrência entre instâncias.
 
-> 🚧 **Status:** Iterações 0 a 4 concluídas: fundação, domínio puro em TDD, schema com garantias no banco, API de wallets e transações com idempotência, concorrência por wallet e auditoria, e publicação confiável da outbox (212 testes de unidade, 82 de integração). Próxima: I5 — consumidor SQS e referências pendentes. Conformidade com o enunciado em [docs/07](./docs/07-conformidade.md). Próxima: Iteração 2 — persistência das wallets. Ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações).
+> 🚧 **Status:** Iterações 0 a 5 concluídas: todo o fluxo obrigatório funciona — API e fila SQS pelo mesmo núcleo, idempotência, concorrência por wallet, auditoria, outbox confiável, inbox/DLQ e referências fora de ordem (212 testes de unidade, 96 de integração). Próxima: I6 — testes com múltiplos processos, crash e reinício. Conformidade com o enunciado em [docs/07](./docs/07-conformidade.md). Próxima: Iteração 2 — persistência das wallets. Ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações).
 
 ## Stack
 
@@ -81,6 +81,17 @@ Chegam nas próximas iterações: `test:concurrency` (I3/I6), `test:load` (I6) e
 ## Configuração
 
 Toda a configuração vem de variáveis de ambiente, validadas no boot (`src/config/env.ts`; falha rápido com a lista de erros). Principais: `DATABASE_URL`, `DB_POOL_MAX`, `AWS_ENDPOINT_URL`, `APP_ROLE` (`api,consumer,outbox,scheduler,notifier` ou `all`), `LOG_LEVEL`, `PORT`, `DB_LOCK_TIMEOUT_MS`, `OUTBOX_BATCH_SIZE`, `OUTBOX_POLL_INTERVAL_MS`, `OUTBOX_LEASE_MS`. Eventos de integração são publicados em `wagering-events.fifo` (grupo = wallet, deduplicação = `eventId`).
+
+### Enviando pela fila
+
+```bash
+Q=$(aws --profile localstack sqs get-queue-url --queue-name wager-transactions.fifo --query QueueUrl --output text)
+aws --profile localstack sqs send-message --queue-url "$Q" \
+  --message-group-id <walletId> --message-deduplication-id "$(uuidgen)" \
+  --message-body '{"messageId":"msg-123","type":"WagerTransactionRequested","occurredAt":"2026-07-29T15:00:00.000Z","data":{"providerId":"provider-a","externalTransactionId":"transaction-123","idempotencyKey":"provider-a:transaction-123","playerId":"<playerId>","walletId":"<walletId>","roundId":"round-987","gameId":"fortune-chimp","kind":"BET","money":{"amount":"25.00","currency":"BRL"}}}'
+```
+
+Mensagens inválidas vão para `wager-transactions-dlq.fifo` com o atributo `reason` (`malformed_json`, `unknown_type`, `invalid_schema`, `invalid_payload:<código>`, `inbox_payload_mismatch`); falhas transitórias voltam com backoff e, após `SQS_MAX_RECEIVE_COUNT` recebimentos, o redrive as leva à DLQ.
 
 > Alertas chegarão por e-mail no Mailpit sem configurar nada. Para usar um SMTP real, copie `.env.example` para `.env` e preencha. O `.env` nunca é versionado.
 

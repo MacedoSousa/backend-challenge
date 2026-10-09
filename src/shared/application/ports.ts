@@ -1,3 +1,4 @@
+import type { InboxMessage } from '../../modules/messaging/domain/inbox-message';
 import type { OutboxMessage } from '../../modules/messaging/domain/outbox-message';
 import type {
   WagerTransaction,
@@ -29,6 +30,8 @@ export interface RequestMeta {
   source?: Source | undefined;
   /** messageId do SQS, quando a entrada veio da fila. */
   messageId?: string | undefined;
+  /** Registro de inbox a gravar na mesma transação (entrada SQS). */
+  inbox?: InboxMessage | undefined;
 }
 
 export interface WalletRepository {
@@ -72,6 +75,18 @@ export interface WagerTransactionRepository {
   ): Promise<WagerTransaction | undefined>;
   /** Reversão (REFUND ou ROLLBACK) PROCESSED que já aponta para a referência. */
   findProcessedReversalOf(referenceTransactionId: string): Promise<WagerTransaction | undefined>;
+  /** Antecipa a próxima tentativa das pendentes que aguardam esta transação (otimização §7.1). */
+  wakeDependents(providerId: string, externalTransactionId: string, at: Date): Promise<void>;
+}
+
+export type InboxRegistration = { status: 'NEW' } | { status: 'DUPLICATE'; existing: InboxMessage };
+
+export interface InboxRepository {
+  /**
+   * `INSERT … ON CONFLICT DO NOTHING` na transação corrente: se outra entrega da mesma
+   * mensagem estiver em andamento, espera o COMMIT dela e então devolve DUPLICATE.
+   */
+  register(message: InboxMessage): Promise<InboxRegistration>;
 }
 
 export interface OutboxRepository {
@@ -119,6 +134,7 @@ export interface TransactionScope {
   transactions: WagerTransactionRepository;
   outbox: OutboxRepository;
   audit: AuditRepository;
+  inbox: InboxRepository;
 }
 
 export interface UnitOfWorkOptions {
@@ -153,7 +169,11 @@ export interface AppLogger {
   error(fields: Record<string, unknown>, message: string): void;
 }
 
-export type DuplicateType = 'idempotent_replay' | 'payload_conflict' | 'key_mismatch';
+export type DuplicateType =
+  | 'idempotent_replay'
+  | 'payload_conflict'
+  | 'key_mismatch'
+  | 'inbox_duplicate';
 
 export const METRICS = Symbol('METRICS');
 /** Métricas de negócio exigidas pelo §12; cresce a cada iteração. */
@@ -168,6 +188,10 @@ export interface Metrics {
   outboxPublished(count: number): void;
   retry(component: 'outbox' | 'consumer' | 'pending_worker'): void;
   outboxLag(seconds: number): void;
+  dlq(reason: string): void;
+  /** Tempo entre o envio da mensagem (SentTimestamp) e o início do consumo. */
+  queueWait(seconds: number): void;
+  pendingReferences(count: number): void;
 }
 
 export const INSTANCE_ID = Symbol('INSTANCE_ID');
@@ -224,4 +248,16 @@ export const MESSAGE_PUBLISHER = Symbol('MESSAGE_PUBLISHER');
 /** Publica eventos de integração (SQS FIFO): grupo = aggregateId, dedup = eventId (D-08). */
 export interface MessagePublisher {
   publish(messages: OutboxMessage[]): Promise<PublishResult>;
+}
+
+export interface PendingReferenceClaim {
+  transactionId: string;
+  walletId: string;
+}
+
+export const PENDING_REFERENCE_STORE = Symbol('PENDING_REFERENCE_STORE');
+/** Claim das transações PENDING_REFERENCE vencidas, com lease (`next_attempt_at` adiado). */
+export interface PendingReferenceStore {
+  claimDue(input: { now: Date; leaseMs: number; limit: number }): Promise<PendingReferenceClaim[]>;
+  count(): Promise<number>;
 }

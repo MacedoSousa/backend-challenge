@@ -51,6 +51,25 @@ const envSchema = z.object({
   OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(10).max(60_000).default(500),
   OUTBOX_LEASE_MS: z.coerce.number().int().min(100).max(600_000).default(30_000),
 
+  /** Consumidor SQS (§10). */
+  CONSUMER_NAME: z.string().min(1).default('wager-transactions'),
+  SQS_WAIT_TIME_SECONDS: z.coerce.number().int().min(0).max(20).default(10),
+  SQS_VISIBILITY_TIMEOUT_SECONDS: z.coerce.number().int().min(1).max(43_200).default(60),
+  CONSUMER_SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().min(100).max(120_000).default(20_000),
+
+  /** Worker de referências pendentes (§7.1, ADR-12). */
+  PENDING_WORKER_INTERVAL_MS: z.coerce.number().int().min(10).max(60_000).default(1_000),
+  PENDING_WORKER_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(50),
+  PENDING_WORKER_LEASE_MS: z.coerce.number().int().min(100).max(600_000).default(30_000),
+  REFERENCE_RETRY_BASE_MS: z.coerce.number().int().min(1).default(1_000),
+  REFERENCE_RETRY_MAX_DELAY_MS: z.coerce.number().int().min(1).default(60_000),
+  REFERENCE_RETRY_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(1_000).default(10),
+  REFERENCE_RETRY_TTL_MS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(15 * 60_000),
+
   /** Pontos de falha injetada (só respeitados com NODE_ENV=test). Ex.: "wager.before-commit". */
   FAULT_POINTS: z.string().default(''),
 });

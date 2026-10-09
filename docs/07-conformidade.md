@@ -4,25 +4,25 @@
 >
 > Legenda: ✅ feito e testado · 🟡 planejado (iteração) · ⚠️ interpretação documentada · ➖ opcional, fora do obrigatório
 
-**Última revisão:** fim da Iteração 4 — 212 testes de unidade, 82 de integração (Postgres e LocalStack reais), incluindo concorrência real e publicação concorrente da outbox.
+**Última revisão:** fim da Iteração 5 — 212 testes de unidade, 96 de integração (Postgres e LocalStack reais): concorrência, outbox, consumidor SQS com inbox/DLQ e worker de referências pendentes.
 
 ## Resumo
 
 | § | Tema | Situação |
 |---|---|---|
-| 1 | Visão geral | ✅ correção, concorrência, idempotência e publicação de eventos · 🟡 consumo SQS (I5) |
-| 2 | Autenticação | ✅ decisão + ponto de extensão · 🟡 validação da identidade na fila (I5) |
-| 3 | Contexto do domínio (at-least-once) | 🟡 cenários mapeados para testes |
+| 1 | Visão geral | ✅ |
+| 2 | Autenticação | ✅ decisão + ponto de extensão; mensagens da fila passam pelas mesmas validações de domínio |
+| 3 | Contexto do domínio (at-least-once) | ✅ duplicatas, fora de ordem, simultaneidade, crash, infra indisponível · 🟡 crash e 3+ processos automatizados (I6) |
 | 4 | Stack | ✅ |
 | 5 | Restrições invioláveis | ✅ todas as 9 |
-| 6 | Modelo de domínio | ✅ · 🟡 inbox na mesma transação (I5) |
-| 7 | Regras de negócio, referências, failure codes | ✅ via HTTP · 🟡 worker de pendências (I5) |
+| 6 | Modelo de domínio | ✅ |
+| 7 | Regras de negócio, referências, failure codes | ✅ |
 | 8 | Concorrência | ✅ CT-01, CT-02, CT-03, CT-10, CT-12 (1 instância) + prova manual com 3 réplicas · 🟡 CT-04 automatizado (I6) |
 | 9 | API HTTP | ✅ |
-| 10 | SQS | ✅ topologia e DLQ · 🟡 consumidor (I5) |
+| 10 | SQS | ✅ |
 | 11 | Outbox e eventos | ✅ |
-| 12 | Observabilidade | ✅ logs, health, métricas de transações, duplicatas, locks, latência, erros, outbox lag e retries da outbox · 🟡 retries do consumidor e DLQ (I5) |
-| 13 | Testes obrigatórios | ✅ unidade, constraints, atomicidade, concorrência 1–3 · 🟡 mensageria e multi-processo |
+| 12 | Observabilidade | ✅ logs JSON com correlationId/messageId/transactionId/walletId/providerId, health e todas as métricas exigidas |
+| 13 | Testes obrigatórios | ✅ unidade, integração completa, concorrência 1–3, 5 e 7 · 🟡 ≥ 3 processos, dois publishers como processos, reinício (I6) |
 | 14 | Avaliação / documentação | ✅ README, ARCHITECTURE em dia |
 
 ## §1 Visão geral
@@ -33,7 +33,7 @@
 | Concorrência entre múltiplas instâncias | lock por wallet (ADR-03); 3 réplicas no Compose: 20 BETs de 30.00 sobre 100.00 → 3 aprovadas | ✅ manual · 🟡 CT-04 automatizado (I6) |
 | Idempotência persistente | `UNIQUE` + snapshot de saldo + replay/conflito sob o lock da wallet | ✅ |
 | Consistência saldo × ledger | `Wallet` devolve o lançamento; cadeia e consistência verificadas no banco (triggers) | ✅ |
-| Processamento assíncrono e recuperação | outbox com lease (I4) ✅; consumidor, worker, DLQ (I5) | ✅ outbox · 🟡 I5 |
+| Processamento assíncrono e recuperação | outbox com lease, consumidor com inbox, backoff e DLQ, worker de pendências | ✅ |
 | Clareza das decisões | ARCHITECTURE.md (30 ADRs), docs/01 §6 (20 decisões) | ✅ |
 
 ## §2 Autenticação
@@ -44,18 +44,18 @@
 | Ponto de extensão explícito no código | `AuthGuard` no-op + `ProviderIdentityPort` (`src/modules/auth/auth.module.ts`) | — | ✅ |
 | Nada de tabela própria de usuários/senhas | não existe | — | ✅ |
 | Health sem autenticação | `@Public()` no `HealthController` | IT-21 (`bootstrap.spec.ts`) | ✅ |
-| Identidade do provedor na mensagem passa pelas validações de domínio | mesmo use case para HTTP e SQS | IT-29 via fila (I5) | 🟡 I5 |
+| Identidade do provedor na mensagem passa pelas validações de domínio | `executeFromQueue` usa o mesmo núcleo da API | `consumer.spec.ts` (wallet inexistente, rejeições) | ✅ |
 
 ## §3 Contexto do domínio
 
 | Premissa | Teste que a cobre | Situação |
 |---|---|---|
-| Mesma operação várias vezes | CT-01 (50× paralelo), IT-09 ✅; IT-12 (fila) | ✅ HTTP · 🟡 I5 |
-| Dependente antes da referência | UT-T15, UT-R01..R05 ✅; CT-07 | ✅ domínio · 🟡 I5 |
+| Mesma operação várias vezes | CT-01, IT-09 (HTTP) ✅; IT-12 (fila: inbox + replay) ✅ | ✅ |
+| Dependente antes da referência | UT-T15, UT-R01..R05, CT-07, cadeia D-15 | ✅ |
 | Várias instâncias na mesma wallet | CT-02, CT-12 (1 instância) ✅; CT-04, CT-09 (multi-processo) | ✅ · 🟡 I6 |
-| Processo morre antes/depois do commit | IT-07 (falha antes do commit: zero rastro) ✅; CT-05, CT-08 | ✅ antes · 🟡 depois (I4–I6) |
+| Processo morre antes/depois do commit | IT-07 (antes) ✅; CT-05 (depois do commit, antes do ack — falha injetada) ✅; CT-08 reinício (I6) | ✅ · 🟡 CT-08 |
 | Eventos publicados mais de uma vez | `outbox.spec.ts` (crash após publicar: republicação com o mesmo `eventId`) | ✅ |
-| Postgres e SQS indisponíveis | IT-21 (Postgres) ✅; IT-17 (SQS na publicação) ✅; consumidor (I5) | ✅ · 🟡 I5 |
+| Postgres e SQS indisponíveis | IT-21, IT-17 ✅; IT-13 (transitório no consumidor → backoff) ✅ | ✅ |
 | **Invariantes:** sem crédito/débito duplicado, sem perder evento, sem saldo negativo | CT-01, CT-02, CT-10, CT-12, IT-02, IT-06, IT-16, crash da outbox | ✅ |
 
 ## §4 Stack
@@ -119,7 +119,7 @@ Adaptações de assinatura: [ARCHITECTURE.md → Adaptações](../ARCHITECTURE.m
 | 6.4 `LOSS` e `REJECTED` não geram lançamento | `affectsBalance()` + `WagerProcessor` | UT-T07, `transactions.spec.ts` | ✅ |
 | 6.4 Double-entry | — | — | ➖ diferencial (Could) |
 | **6.5** `InboxMessage` e `OutboxMessage` | `src/modules/messaging/domain/` | `messaging.spec.ts` | ✅ |
-| 6.5 Inbox, financeiro, ledger e outbox na mesma transação SQL | `UnitOfWork` | IT-07 ✅ (sem inbox); inbox na I5 | ✅ · 🟡 I5 |
+| 6.5 Inbox, financeiro, ledger e outbox na mesma transação SQL | `UnitOfWork` + `inbox.register` no mesmo scope | IT-07, CT-05 | ✅ |
 
 ## §7 Regras de negócio
 
@@ -137,11 +137,11 @@ Adaptações de assinatura: [ARCHITECTURE.md → Adaptações](../ARCHITECTURE.m
 | Regra 5: valor igual ao da referência | `AMOUNT_MISMATCH` | UT-T12 | ✅ |
 | Regra 6: `REJECTED` não altera saldo nem ledger | `WagerProcessor.reject` | `transactions.spec.ts` | ✅ |
 | Regra 7: replay devolve o resultado original com o saldo da época | snapshot `balanceAfter` | IT-09, IT-11 | ✅ |
-| Regra 8: referência ausente → `PENDING_REFERENCE` | `ReferencePolicy` → `WAIT` | UT-T15, `transactions.spec.ts` (202 + evento); CT-07 | ✅ · 🟡 resolução pelo worker (I5) |
+| Regra 8: referência ausente → `PENDING_REFERENCE` | `ReferencePolicy` → `WAIT`; worker resolve | UT-T15, CT-07, cadeia D-15 | ✅ |
 | Regra 9: reversão negativa → código distinto, auditável | `ReversalInsufficientFundsError` + auditoria `REJECTED` | UT-W08, `transactions.spec.ts` | ✅ |
-| **7.1** Worker agendado com backoff exponencial | `ReferenceRetryPolicy` ✅; worker com `SKIP LOCKED` | UT-R01, UT-R02, UT-R04 ✅; CT-07 | ✅ política · 🟡 I5 |
+| **7.1** Worker agendado com backoff exponencial | `ResolvePendingReferencesUseCase` + `PendingReferenceWorker` (claim com lease e `SKIP LOCKED`) | UT-R01..R04, `pending-references.spec.ts` (2 workers concorrentes) | ✅ |
 | 7.1 Limite de tentativas ou TTL definido e justificado | 10 tentativas / TTL 15 min (ADR-12, docs/03 §9) | UT-R02, UT-R03 | ✅ |
-| 7.1 Esgotado → `REJECTED` com código da referência inexistente + evento | `REFERENCE_NOT_FOUND` + `WagerTransactionRejected` | UT-R05 ✅; IT no worker | ✅ domínio · 🟡 I5 |
+| 7.1 Esgotado → `REJECTED` com código da referência inexistente + evento | `WagerProcessor.expire` | UT-R05, `pending-references.spec.ts` (RETRY_SCHEDULED ×2 → REJECTED + evento) | ✅ |
 | **7.2** `failureCode` estável, taxonomia documentada | `FailureCode` + docs/01 §7 (com ação recomendada) | — | ✅ |
 | Interpretações adicionais documentadas | docs/01 §6 (D-01..D-20) | — | ✅ |
 
@@ -183,14 +183,14 @@ Adaptações de assinatura: [ARCHITECTURE.md → Adaptações](../ARCHITECTURE.m
 | Requisito | Onde | Teste | Situação |
 |---|---|---|---|
 | Filas `wager-transactions.fifo` e `wager-transactions-dlq.fifo` | `queues.ts` | `bootstrap.spec.ts` | ✅ |
-| Formato da mensagem (`messageId`, `type`, `occurredAt`, `data` com `idempotencyKey`) | schema zod do consumidor | IT-14 | 🟡 I5 |
-| Mesmo use case da entrada HTTP | `ProcessWagerTransaction` | IT-12 | 🟡 I5 |
-| Inbox persistente por `(consumerName, messageId)` | `InboxMessage` ✅; PK no banco | IT-12 | ✅ · 🟡 I5 |
-| `ack` só após o commit | consumidor | CT-05 | 🟡 I5 |
-| Distinguir negócio / transitório / permanente | docs/03 §8 e §9.1 | IT-13, IT-14 | ✅ doc · 🟡 I5 |
-| Limite de tentativas antes da DLQ | redrive `maxReceiveCount = 5` | `bootstrap.spec.ts` ✅; IT-15 | ✅ · 🟡 I5 |
-| `SIGTERM`: concluir ou devolver visibilidade | `enableShutdownHooks` ✅ (I0); drenagem | CT-11 | ✅ base · 🟡 I5 |
-| Redelivery sem duplicar efeitos | inbox + idempotência | CT-05 | 🟡 I5 |
+| Formato da mensagem (`messageId`, `type`, `occurredAt`, `data` com `idempotencyKey`) | `WagerTransactionRequestedMessage` (zod, contrato compartilhado com a API) | IT-14 | ✅ |
+| Mesmo use case da entrada HTTP | `ProcessWagerTransactionUseCase.executeFromQueue` | `consumer.spec.ts` | ✅ |
+| Inbox persistente por `(consumerName, messageId)` | `inbox_messages` (PK) + `INSERT … ON CONFLICT DO NOTHING` na transação | IT-12, CT-05 | ✅ |
+| `ack` só após o commit | `DeleteMessage` depois do `executeFromQueue` | CT-05 | ✅ |
+| Distinguir negócio / transitório / permanente | consumidor: negócio → ack; transitório → `ChangeMessageVisibility` com backoff; permanente → DLQ | `consumer.spec.ts` (IT-13, IT-14, rejeições) | ✅ |
+| Limite de tentativas antes da DLQ | redrive `maxReceiveCount` | `bootstrap.spec.ts`, IT-15 | ✅ |
+| `SIGTERM`: concluir ou devolver visibilidade | long polling abortado; em andamento concluem; não iniciadas voltam (`VisibilityTimeout 0`) | CT-11 | ✅ |
+| Redelivery sem duplicar efeitos | inbox + idempotência | IT-12, CT-05, Compose (30 duplicatas, 0 efeitos extras) | ✅ |
 
 ## §11 Transactional Outbox
 
@@ -212,11 +212,11 @@ Adaptações de assinatura: [ARCHITECTURE.md → Adaptações](../ARCHITECTURE.m
 | Requisito | Onde | Teste | Situação |
 |---|---|---|---|
 | Logs JSON com `correlationId` | pino + `AsyncLocalStorage` | IT (correlação) ✅ | ✅ |
-| … com `messageId`, `transactionId`, `walletId`, `providerId` | auditoria grava todos; `enrichContext` nos logs do consumidor | — | ✅ auditoria · 🟡 logs do consumidor (I5) |
+| … com `messageId`, `transactionId`, `walletId`, `providerId` | `runWithContext` + `enrichContext` no consumidor; auditoria grava todos | `consumer.spec.ts` | ✅ |
 | Sem dados sensíveis nem payload financeiro completo | `REDACT_PATHS` | E7-3 | ✅ · 🟡 teste I6 |
 | Métricas: transações por status, duplicatas, conflitos de lock, latência | `wagering_transactions_total`, `wagering_duplicates_detected_total`, `wagering_lock_wait_seconds`, `wagering_lock_conflicts_total`, `wagering_lock_timeouts_total`, `wagering_processing_duration_seconds`, `wagering_errors_total` | `transactions.spec.ts` | ✅ |
 | Métricas: outbox lag | `wagering_outbox_lag_seconds`, `wagering_outbox_published_total`, `wagering_retries_total{component="outbox"}` | `outbox.spec.ts` | ✅ |
-| Métricas: retries, mensagens em DLQ | idem | IT (I5) | 🟡 I5 |
+| Métricas: retries, mensagens em DLQ | `wagering_retries_total{component}`, `wagering_dlq_messages_total{reason}`, `wagering_queue_wait_seconds`, `wagering_pending_references` | `consumer.spec.ts`, `outbox.spec.ts` | ✅ |
 | Health live e ready separados | `health.module.ts` | IT-21 | ✅ |
 | OpenTelemetry, dashboard | docs/06 | — | ➖ I8 |
 
@@ -231,17 +231,17 @@ Adaptações de assinatura: [ARCHITECTURE.md → Adaptações](../ARCHITECTURE.m
 | Unidade: idempotency key com payload divergente | UT-T08, UT-T09 | ✅ |
 | **Integração:** migrations e constraints | IT-01..06 + `schema.spec.ts` | ✅ |
 | Integração: atomicidade wallet/ledger/inbox/outbox | IT-07 | ✅ · 🟡 inbox (I5) |
-| Integração: inbox e redelivery | IT-12 | 🟡 I5 |
+| Integração: inbox e redelivery | IT-12, CT-05 | ✅ |
 | Integração: publishers concorrentes | IT-16 | ✅ |
-| Integração: retry e DLQ | IT-13..15 | 🟡 I5 |
+| Integração: retry e DLQ | IT-13, IT-14, IT-15 | ✅ |
 | Integração: recuperação após reinício | IT-18 (eventos gravados com o publisher parado são publicados quando ele sobe) | ✅ |
 | **Concorrência 1:** mesma aposta 50× em paralelo | CT-01 | ✅ |
 | Concorrência 2: saldo disputado | CT-02, CT-12 | ✅ |
 | Concorrência 3: wallets distintas | CT-03 | ✅ |
 | Concorrência 4: ≥ 3 instâncias | CT-04 | 🟡 I6 |
-| Concorrência 5: morto após commit e antes do ack | CT-05 | 🟡 I6 |
+| Concorrência 5: morto após commit e antes do ack | CT-05 (falha injetada + segunda instância) | ✅ (processo morto de verdade: I6) |
 | Concorrência 6: dois publishers | CT-06 | 🟡 I6 |
-| Concorrência 7: `ROLLBACK`/`REFUND` antes da referência | CT-07 | 🟡 I6 |
+| Concorrência 7: `ROLLBACK`/`REFUND` antes da referência | CT-07, cadeia D-15 | ✅ |
 | Concorrência 8: reinício com consistência final | CT-08 | 🟡 I6 |
 | Invariante final `wallet.balance == ledger` em todos os testes | helper `assertLedgerConsistency` (soma, cadeia e versões) | ✅ em uso desde a I2 |
 | Postgres e SQS reais (sem mocks completos) | Testcontainers | ✅ |
@@ -260,7 +260,7 @@ Adaptações de assinatura: [ARCHITECTURE.md → Adaptações](../ARCHITECTURE.m
 |---|---|
 | `number` para dinheiro | `Money` com `bigint` + teste de arquitetura ✅ |
 | Saldo negativo por race | lock por wallet + `CHECK (balance >= 0)` + CT-02, CT-12 ✅ |
-| Débito ou crédito duplicado | `UNIQUE` de idempotência + índice de reversão única + CT-01, CT-10 ✅ (inbox na I5) |
+| Débito ou crédito duplicado | `UNIQUE` de idempotência + inbox + índice de reversão única + CT-01, CT-10, IT-12, CT-05 ✅ |
 | Idempotência só em memória | não existe cache; tudo no banco |
 | Correta só com uma instância | Compose com 3 réplicas desde a I0 + CT-04 |
 | Evento antes do commit | outbox na transação + publisher assíncrono (I4) + IT-07, IT-18 ✅ |

@@ -39,18 +39,28 @@ export interface ProcessWagerCommand {
   referenceExternalTransactionId?: string | undefined;
 }
 
+/** Desfecho para o consumidor SQS: ele decide ack ou DLQ por aqui. */
+export type QueueOutcome =
+  | { kind: 'decided' | 'replay'; result: WagerResultView }
+  | { kind: 'conflict'; failureCode: FailureCode; transactionId: string }
+  | { kind: 'duplicate_message' }
+  /** Mesmo messageId com payload diferente: anomalia do produtor (D-14) → DLQ. */
+  | { kind: 'inbox_payload_mismatch' };
+
 /** Unicidades que, numa corrida rara, significam "a outra requisição venceu": reler e responder. */
 const RETRYABLE_UNIQUE = new Set(['uq_tx_idempotency_key', 'uq_tx_provider_external']);
 
 type Outcome =
   | { type: 'decided'; transaction: WagerTransaction }
   | { type: 'replay'; transaction: WagerTransaction }
-  | { type: 'conflict'; duplicate: DuplicateType; transaction: WagerTransaction };
+  | { type: 'conflict'; duplicate: DuplicateType; transaction: WagerTransaction }
+  | { type: 'duplicate_message' }
+  | { type: 'inbox_payload_mismatch' };
 
 /**
- * Entrada única de transações financeiras — usada pela API HTTP e pelo consumidor SQS (§10).
- * Tudo acontece sob o lock da wallet: idempotência, decisão, ledger, auditoria e outbox
- * são confirmados juntos ou nada é.
+ * Entrada única de transações financeiras — a API HTTP e o consumidor SQS usam o mesmo
+ * núcleo (§10). Tudo acontece sob o lock da wallet: inbox, idempotência, decisão, ledger,
+ * auditoria e outbox são confirmados juntos ou nada é.
  */
 @Injectable()
 export class ProcessWagerTransactionUseCase {
@@ -63,13 +73,51 @@ export class ProcessWagerTransactionUseCase {
     private readonly processor: WagerProcessor,
   ) {}
 
+  /** Entrada HTTP: resultado da transação, ou 409 em conflito de idempotência. */
   async execute(command: ProcessWagerCommand, meta: RequestMeta): Promise<WagerResultView> {
-    const source: Source = meta.source ?? 'HTTP';
+    const outcome = await this.run(command, { ...meta, source: meta.source ?? 'HTTP' });
+    switch (outcome.type) {
+      case 'decided':
+        return toWagerResult(outcome.transaction, false);
+      case 'replay':
+        return toWagerResult(outcome.transaction, true);
+      case 'conflict':
+        throw conflictError(outcome.duplicate, outcome.transaction.id);
+      default:
+        throw new Error(`desfecho de fila numa entrada HTTP: ${outcome.type}`);
+    }
+  }
+
+  /** Entrada SQS: nunca lança por regra de negócio; o consumidor decide ack/DLQ pelo desfecho. */
+  async executeFromQueue(
+    command: ProcessWagerCommand,
+    meta: RequestMeta & { inbox: NonNullable<RequestMeta['inbox']> },
+  ): Promise<QueueOutcome> {
+    const outcome = await this.run(command, { ...meta, source: 'SQS' });
+    switch (outcome.type) {
+      case 'decided':
+        return { kind: 'decided', result: toWagerResult(outcome.transaction, false) };
+      case 'replay':
+        return { kind: 'replay', result: toWagerResult(outcome.transaction, true) };
+      case 'conflict':
+        return {
+          kind: 'conflict',
+          failureCode: conflictError(outcome.duplicate, outcome.transaction.id).code,
+          transactionId: outcome.transaction.id,
+        };
+      case 'duplicate_message':
+        return { kind: 'duplicate_message' };
+      case 'inbox_payload_mismatch':
+        return { kind: 'inbox_payload_mismatch' };
+    }
+  }
+
+  private async run(command: ProcessWagerCommand, meta: RequestMeta & { source: Source }) {
     try {
-      return await this.attempt(command, { ...meta, source });
+      return await this.attempt(command, meta);
     } catch (error) {
       if (error instanceof UniqueConstraintViolation && RETRYABLE_UNIQUE.has(error.constraint)) {
-        return this.attempt(command, { ...meta, source });
+        return this.attempt(command, meta);
       }
       if (error instanceof LockTimeoutError) this.metrics.lockTimeout();
       throw error;
@@ -79,10 +127,10 @@ export class ProcessWagerTransactionUseCase {
   private async attempt(
     command: ProcessWagerCommand,
     meta: RequestMeta & { source: Source },
-  ): Promise<WagerResultView> {
+  ): Promise<Outcome> {
     const startedAt = performance.now();
     const now = this.clock.now();
-    // validação de contrato antes de tocar o banco (400 sem lock)
+    // validação de contrato antes de tocar o banco (400 / DLQ sem lock)
     const hash = payloadHash(command);
     const transaction = WagerTransaction.create({
       ...command,
@@ -93,24 +141,30 @@ export class ProcessWagerTransactionUseCase {
     });
 
     const outcome = await this.uow.run<Outcome>(async (scope) => {
+      if (meta.inbox) {
+        const registration = await scope.inbox.register(meta.inbox);
+        if (registration.status === 'DUPLICATE') {
+          return registration.existing.matchesPayload(meta.inbox.payloadHash)
+            ? { type: 'duplicate_message' }
+            : { type: 'inbox_payload_mismatch' };
+        }
+      }
+
       const lockStartedAt = performance.now();
       const wallet = await scope.wallets.lockById(command.walletId);
       this.metrics.lockWait((performance.now() - lockStartedAt) / 1000);
 
       const existing = await scope.transactions.findByIdempotencyKey(command.idempotencyKey);
       if (existing) {
-        const replay = existing.matchesPayload(hash);
-        if (replay) {
+        if (existing.matchesPayload(hash)) {
           this.auditDuplicate(scope, existing, now, meta, 'IDEMPOTENT_REPLAY');
-        } else {
-          this.auditDuplicate(scope, existing, now, meta, 'IDEMPOTENCY_CONFLICT', {
-            failureCode: FailureCode.IdempotencyPayloadMismatch,
-            details: { receivedPayloadHash: hash, storedPayloadHash: existing.payloadHash },
-          });
+          return { type: 'replay', transaction: existing };
         }
-        return replay
-          ? { type: 'replay', transaction: existing }
-          : { type: 'conflict', duplicate: 'payload_conflict', transaction: existing };
+        this.auditDuplicate(scope, existing, now, meta, 'IDEMPOTENCY_CONFLICT', {
+          failureCode: FailureCode.IdempotencyPayloadMismatch,
+          details: { receivedPayloadHash: hash, storedPayloadHash: existing.payloadHash },
+        });
+        return { type: 'conflict', duplicate: 'payload_conflict', transaction: existing };
       }
 
       const sameOperation = await scope.transactions.findByProviderExternal(
@@ -135,36 +189,28 @@ export class ProcessWagerTransactionUseCase {
       return { type: 'decided', transaction };
     });
 
-    const elapsed = (performance.now() - startedAt) / 1000;
+    this.record(outcome, meta.source, (performance.now() - startedAt) / 1000);
+    return outcome;
+  }
+
+  private record(outcome: Outcome, source: Source, seconds: number): void {
     switch (outcome.type) {
       case 'replay':
-        this.metrics.duplicate({ source: meta.source, type: 'idempotent_replay' });
-        return toWagerResult(outcome.transaction, true);
+        this.metrics.duplicate({ source, type: 'idempotent_replay' });
+        return;
       case 'conflict':
-        this.metrics.duplicate({ source: meta.source, type: outcome.duplicate });
-        throw outcome.duplicate === 'payload_conflict'
-          ? new IdempotencyPayloadMismatchError('Idempotency-Key já usada com outro payload', {
-              transactionId: outcome.transaction.id,
-            })
-          : new IdempotencyKeyMismatchError('operação já registrada com outra Idempotency-Key', {
-              transactionId: outcome.transaction.id,
-            });
-      case 'decided':
-        this.metrics.transaction(
-          {
-            kind: outcome.transaction.kind,
-            status: outcome.transaction.status,
-            source: meta.source,
-          },
-          elapsed,
-        );
-        if (outcome.transaction.failureCode) {
-          this.metrics.error({
-            category: 'business',
-            failureCode: outcome.transaction.failureCode,
-          });
-        }
-        return toWagerResult(outcome.transaction, false);
+        this.metrics.duplicate({ source, type: outcome.duplicate });
+        return;
+      case 'duplicate_message':
+        this.metrics.duplicate({ source, type: 'inbox_duplicate' });
+        return;
+      case 'inbox_payload_mismatch':
+        return;
+      case 'decided': {
+        const { kind, status, failureCode } = outcome.transaction;
+        this.metrics.transaction({ kind, status, source }, seconds);
+        if (failureCode) this.metrics.error({ category: 'business', failureCode });
+      }
     }
   }
 
@@ -184,4 +230,14 @@ export class ProcessWagerTransactionUseCase {
       ...extra,
     });
   }
+}
+
+function conflictError(duplicate: DuplicateType, transactionId: string) {
+  return duplicate === 'payload_conflict'
+    ? new IdempotencyPayloadMismatchError('Idempotency-Key já usada com outro payload', {
+        transactionId,
+      })
+    : new IdempotencyKeyMismatchError('operação já registrada com outra Idempotency-Key', {
+        transactionId,
+      });
 }
