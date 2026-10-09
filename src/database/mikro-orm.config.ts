@@ -2,15 +2,14 @@ import { join } from 'node:path';
 import { Migrator } from '@mikro-orm/migrations';
 import { defineConfig } from '@mikro-orm/postgresql';
 import type { Env } from '../config/env';
+import { ENTITY_SCHEMAS } from '../shared/infrastructure/database/records';
 
 const MIGRATIONS_PATH = join(import.meta.dir, 'migrations');
 
 export function createOrmConfig(env: Pick<Env, 'DATABASE_URL' | 'DB_POOL_MAX' | 'NODE_ENV'>) {
   return defineConfig({
     clientUrl: env.DATABASE_URL,
-    // entidades ORM são registradas por cada módulo a partir da Iteração 2
-    entities: [],
-    discovery: { warnWhenNoEntities: false },
+    entities: ENTITY_SCHEMAS,
     pool: { min: 0, max: env.DB_POOL_MAX },
     // Bun executa TypeScript diretamente: migrations são lidas como .ts
     preferTs: true,

@@ -13,7 +13,7 @@ Diagramas: [docs/05-diagramas.md](./docs/05-diagramas.md).
 
 | # | Decisão | Alternativas consideradas | Trade-off aceito |
 |---|---|---|---|
-| ADR-01 | **MikroORM** com entidades ORM separadas do domínio + mappers | TypeORM; `EntitySchema` direto nas classes de domínio | mais código de mapeamento, em troca de um domínio sem decorators e com `rehydrate` como ponto único |
+| ADR-01 | **MikroORM** com registros de persistência mapeados por `EntitySchema` (sem decorators) e separados do domínio; mappers fazem a ponte via `rehydrate` | TypeORM; decorators nas classes de domínio | mais código de mapeamento, em troca de um domínio puro e de evitar dependência de `reflect-metadata` nos tipos de coluna |
 | ADR-02 | `Money` com **`bigint` em centavos** (escala fixa 2); `NUMERIC(20,2)` no banco; string decimal na borda | `decimal.js`, `big.js` | não suporta moedas com escala ≠ 2 (fora do escopo) |
 | ADR-03 | **Lock pessimista por wallet** (`SELECT … FOR UPDATE`) + `CHECK (balance >= 0)` + `version` | optimistic + retry; `UPDATE` condicional; advisory lock | throughput de uma única hot wallet fica serializado (correto por definição) |
 | ADR-04 | Isolamento `READ COMMITTED`, `lock_timeout 5s` → erro transitório | `SERIALIZABLE` | depende da disciplina de lock explícito |
@@ -38,6 +38,9 @@ Diagramas: [docs/05-diagramas.md](./docs/05-diagramas.md).
 | ADR-23 | **Balanceador nginx** na frente das réplicas no Compose, com `resolve` dinâmico, `proxy_connect_timeout 1s` e nova tentativa em outra réplica (só GET; POST nunca é repetido pelo proxy) | Traefik; acessar réplicas por portas diferentes | uma peça a mais; em produção seria o load balancer da plataforma |
 | ADR-24 | **Sessão única por jogador fora do núcleo**: a proteção financeira contra jogar o mesmo saldo em dois jogos é o lock da wallet + `CHECK (balance >= 0)`. Fica uma porta `PlayerSessionPolicy` (no-op) chamada antes de cada `BET`, com `failureCode` reservado `CONCURRENT_GAME_NOT_ALLOWED`, e um alerta antifraude de jogos simultâneos | bloquear `BET` em outro jogo até a rodada anterior terminar | sem sinal confiável de fim de rodada; um `LOSS` perdido travaria o jogador |
 | ADR-25 | **`playerId` opaco** (UUID emitido pela plataforma, validado no contrato), nunca dado pessoal | aceitar qualquer string | o provedor precisa mapear seu ID interno para o UUID da plataforma |
+| ADR-26 | **FKs `DEFERRABLE INITIALLY DEFERRED`** + triggers de integridade: cadeia do ledger (`balance_before` = `balance_after` anterior, mesma moeda da wallet) e constraint trigger diferido que exige saldo e versão da wallet iguais ao último lançamento no COMMIT | ordenar INSERTs manualmente; confiar só no domínio | triggers custam algumas leituras por escrita; em troca, nem um bug nem um SQL manual consegue deixar saldo e ledger divergentes |
+| ADR-27 | **Unit of Work como porta** (`UnitOfWork.run(scope => …)`): cada execução usa um `EntityManager` novo (`fork`) e uma transação própria; erros do driver são traduzidos (unicidade → `UniqueConstraintViolation`; conexão, `lock_timeout`, `statement_timeout` → `INFRA_UNAVAILABLE` / 503) | use cases chamando `em.transactional` direto | use cases testáveis e sem dependência do ORM; o mesmo UoW serve HTTP, consumidor e workers |
+| ADR-28 | **Métricas por instância** (`/metrics` em cada réplica, prom-client); o Prometheus deve coletar cada réplica, nunca pelo balanceador | agregador central; push gateway | contadores ficam por processo (somados no Prometheus); verificado no Compose: pelo balanceador cada coleta cai numa réplica diferente |
 
 Interpretações de requisitos ambíguos: [docs/01-analise-requisitos.md §6](./docs/01-analise-requisitos.md#6-ambiguidades-e-decisões-adotadas).
 
@@ -68,7 +71,7 @@ Ver [docs/01 §7–8](./docs/01-analise-requisitos.md#7-taxonomia-de-failurecode
 
 ## Observabilidade
 
-Detalhes, catálogo de métricas, dashboards e alertas: [docs/06-observabilidade.md](./docs/06-observabilidade.md).
+Detalhes, catálogo de métricas, dashboards e alertas: [docs/06-observabilidade.md](./docs/06-observabilidade.md). Erros HTTP seguem RFC 9457 (`application/problem+json`) com `failureCode` e `correlationId`.
 
 - **Logs:** JSON (pino) com `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`. Redaction de payloads e valores.
 - **Métricas** (`/metrics`, Prometheus):

@@ -57,3 +57,11 @@ function sortKeys(value: unknown): unknown {
   }
   return value;
 }
+
+/** Hash da transação interna OPENING: identifica a abertura de forma determinística. */
+export function openingPayloadHash(walletId: string, playerId: string, money: MoneyProps): string {
+  const canonical = JSON.stringify(
+    sortKeys({ kind: 'OPENING', walletId, playerId, money: Money.from(money).toJSON() }),
+  );
+  return createHash('sha256').update(canonical, 'utf8').digest('hex');
+}
