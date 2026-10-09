@@ -13,40 +13,41 @@
 
 ## 2. Estrutura de pastas
 
+Estrutura real (o desenho inicial previa um módulo `alerting`, adiado para a I8):
+
 ```
 src/
-├── main.ts                         # bootstrap; APP_ROLE decide quais módulos sobem
+├── main.ts                      # bootstrap; configureApp() comum a produção e testes
+├── setup.ts                     # migrations + filas (serviço `setup` do Compose)
 ├── app.module.ts
-├── config/                         # schema de env validado com zod
-├── shared/
-│   ├── domain/                     # Money, DomainError, Clock, IdGenerator (portas)
-│   ├── application/                # UnitOfWork port, Result helpers
-│   └── infrastructure/             # SystemClock, UuidV7Generator, logger, métricas
-├── modules/
-│   ├── wallet/
-│   │   ├── domain/                 # Wallet, WalletLedgerEntry, erros
-│   │   ├── application/            # CreateWallet, GetWallet, ListLedger, ReconcileWallet
-│   │   ├── infrastructure/         # WalletEntity (ORM), mappers, MikroOrmWalletRepository
-│   │   └── presentation/http/      # WalletController, DTOs (zod)
-│   ├── wagering/
-│   │   ├── domain/                 # WagerTransaction, ReferencePolicy, FailureCode
-│   │   ├── application/            # ProcessWagerTransaction, RetryPendingReferences, queries
-│   │   ├── infrastructure/
-│   │   └── presentation/
-│   │       ├── http/               # WageringController
-│   │       └── sqs/                # WagerTransactionConsumer
-│   ├── messaging/
-│   │   ├── domain/                 # InboxMessage, OutboxMessage, IntegrationEvent + eventos
-│   │   ├── application/            # PublishOutbox
-│   │   └── infrastructure/         # SqsClient adapter, OutboxPublisherWorker
-│   ├── alerting/                   # webhook do Grafana, IncidentReport, diagnóstico de gargalo, SMTP
-│   ├── health/
-│   └── auth/                       # AuthGuard no-op + ProviderIdentityPort
+├── config/                      # env validado com zod (falha rápida)
 ├── database/
-│   ├── migrations/
+│   ├── migrations/              # SQL versionado e reversível (4 migrations)
 │   └── mikro-orm.config.ts
+├── shared/
+│   ├── domain/                  # Money, DomainError, InvariantViolationError, FailureCode
+│   ├── application/             # portas (UnitOfWork, repositórios, Clock, Metrics…) e erros
+│   ├── infrastructure/
+│   │   ├── database/            # EntitySchemas, mappers, MikroOrmUnitOfWork (lock, timeouts)
+│   │   ├── logging/             # pino + AsyncLocalStorage (correlationId)
+│   │   ├── sqs/                 # cliente e topologia de filas
+│   │   ├── platform.module.ts   # relógio, ids, métricas Prometheus, FaultInjector
+│   │   └── polling-loop.ts      # laço dos workers
+│   └── presentation/http/       # ProblemDetailsFilter, ZodValidationPipe
+└── modules/
+    ├── wallet/                  # domain (Wallet, ledger) · application · presentation/http
+    ├── wagering/
+    │   ├── domain/              # WagerTransaction, ReferencePolicy, ReferenceRetryPolicy, payloadHash
+    │   ├── application/         # WagerProcessor, ProcessWagerTransaction, ResolvePendingReferences, consultas
+    │   ├── infrastructure/      # claim de pendências + worker
+    │   └── presentation/        # contrato zod comum, http/, sqs/ (consumidor)
+    ├── messaging/               # domain (eventos, inbox, outbox) · application (PublishOutbox) · infrastructure
+    ├── health/
+    └── auth/                    # AuthGuard no-op + ProviderIdentityPort
 test/
-├── unit/  integration/  concurrency/  e2e/  load/  support/
+├── unit/                        # domínio, aplicação com dublês, arquitetura, logs
+├── integration/                 # Testcontainers: Postgres + LocalStack reais
+└── concurrency/                 # processos reais (Bun.spawn), SIGKILL/SIGTERM
 ```
 
 ## 3. Padrões NestJS adotados

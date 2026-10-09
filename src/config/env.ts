@@ -1,7 +1,7 @@
 import { hostname } from 'node:os';
 import { z } from 'zod';
 
-export const APP_ROLES = ['api', 'consumer', 'outbox', 'scheduler', 'notifier'] as const;
+export const APP_ROLES = ['api', 'consumer', 'outbox', 'scheduler'] as const;
 export type AppRole = (typeof APP_ROLES)[number];
 
 const roles = z

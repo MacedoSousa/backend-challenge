@@ -143,7 +143,7 @@ Consistente em **todos** os endpoints (filtro global de exceções):
 | Processada (nova) | `201` | `status: PROCESSED`, `idempotentReplay: false` |
 | Replay de processada | `200` | mesmo corpo, `idempotentReplay: true` |
 | Aceita, aguardando referência | `202` | `status: PENDING_REFERENCE` |
-| Rejeitada por negócio (inclui replay) | `422` | `status: REJECTED`, `failureCode` |
+| Rejeitada por negócio (inclui replay) | `422` | problem details com o resultado persistido como extensões: `failureCode`, `transactionId`, `transactionStatus: REJECTED`, `balance`, `idempotentReplay`, `relatedTransactionId` (ADR-29) |
 | Payload inválido | `400` | `failureCode: VALIDATION_ERROR`, detalhes por campo |
 | Recurso inexistente | `404` | `failureCode` |
 | Conflito (idempotência, wallet duplicada) | `409` | `failureCode` |

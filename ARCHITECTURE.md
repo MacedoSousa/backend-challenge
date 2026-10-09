@@ -5,7 +5,14 @@
 
 ## Visão geral
 
-Monólito modular NestJS sobre Bun, com arquitetura hexagonal. A mesma imagem roda em N réplicas e assume papéis (`api`, `consumer`, `outbox`, `scheduler`). PostgreSQL é a **fonte da verdade** de todas as invariantes. O SQS serve como transporte *at-least-once*, e a ordenação FIFO é usada apenas como otimização.
+Monólito modular NestJS sobre Bun, com arquitetura hexagonal. A mesma imagem roda em N réplicas e assume papéis (`api`, `consumer`, `outbox`, `scheduler`). PostgreSQL é a **fonte da verdade** de todas as invariantes; o SQS é transporte *at-least-once*, e a ordenação FIFO é apenas otimização.
+
+**Uma transação, do começo ao fim** (HTTP ou SQS, mesmo núcleo):
+
+1. contrato validado (zod + `Money` canônico) **antes** de tocar o banco;
+2. numa transação SQL: inbox (se veio da fila) → `SELECT … FOR UPDATE` na wallet → idempotência (replay ou conflito) → `WagerProcessor` (dono, moeda, política de sessão, referência pelo fluxo único de reversão, saldo) → transação + lançamento + auditoria + eventos na outbox → **COMMIT** (o banco ainda confere cadeia do ledger e saldo × ledger);
+3. só então: resposta HTTP ou ack no SQS;
+4. depois: o publisher (lease + `SKIP LOCKED`) leva os eventos ao SQS; o worker de pendências resolve referências que chegaram fora de ordem.
 
 Diagramas: [docs/05-diagramas.md](./docs/05-diagramas.md).
 
@@ -32,8 +39,8 @@ Diagramas: [docs/05-diagramas.md](./docs/05-diagramas.md).
 | ADR-17 | Validação com **zod**, o mesmo schema para HTTP e SQS | `class-validator` | sai do idioma mais comum do Nest |
 | ADR-18 | IDs UUID v7 | UUID v4, ULID | — |
 | ADR-19 | **Trilha de auditoria** `wager_transaction_audit`, append-only, 1 linha por decisão (inclusive replay e conflito), na mesma transação SQL; ligada ao lançamento (`ledger_entry_id`) e à transação relacionada | só logs estruturados; event sourcing completo | mais escrita por requisição (replays passam a fazer commit), em troca de responder por SQL "para onde foi o dinheiro e o que aconteceu" |
-| ADR-20 | Observabilidade **100% gratuita e local**: OpenTelemetry + pino → `grafana/otel-lgtm` (Grafana, Prometheus, Loki, Tempo), `postgres-exporter`, Grafana com fonte PostgreSQL para dados exatos, Grafana Alerting → e-mail (Mailpit por padrão; SMTP real opcional via `.env`) | Datadog (pago após trial); dashboard próprio; Prometheus + Alertmanager avulsos | o repositório é público: roda sem conta nem chave e não versiona segredos |
-| ADR-21 | **Relatório de incidente por e-mail**: o Grafana detecta e chama um webhook; o módulo `alerting` (papel `notifier`, banco read-only) enriquece com último cliente afetado (mascarado), impacto, atraso, gargalo (heurísticas determinísticas), filas e desfecho, e envia por SMTP (Mailpit local). Idempotente por `(fingerprint, startsAt)` na tabela `incidents`. Níveis crítico/médio/leve com políticas de reenvio; os leves vão num resumo horário | só template nativo do Grafana; notificador próprio que também detecta | mais um componente, isolado do caminho financeiro; fallback nativo do Grafana se ele cair |
+| ADR-20 | **[Planejado — diferencial da I8, não implementado]** Observabilidade **100% gratuita e local**: OpenTelemetry + pino → `grafana/otel-lgtm` (Grafana, Prometheus, Loki, Tempo), `postgres-exporter`, Grafana com fonte PostgreSQL para dados exatos, Grafana Alerting → e-mail (Mailpit por padrão; SMTP real opcional via `.env`) | Datadog (pago após trial); dashboard próprio; Prometheus + Alertmanager avulsos | o repositório é público: roda sem conta nem chave e não versiona segredos |
+| ADR-21 | **[Planejado — diferencial da I8, não implementado]** **Relatório de incidente por e-mail**: o Grafana detecta e chama um webhook; o módulo `alerting` (papel `notifier`, banco read-only) enriquece com último cliente afetado (mascarado), impacto, atraso, gargalo (heurísticas determinísticas), filas e desfecho, e envia por SMTP (Mailpit local). Idempotente por `(fingerprint, startsAt)` na tabela `incidents`. Níveis crítico/médio/leve com políticas de reenvio; os leves vão num resumo horário | só template nativo do Grafana; notificador próprio que também detecta | mais um componente, isolado do caminho financeiro; fallback nativo do Grafana se ele cair |
 | ADR-22 | **Versões fixadas em majors maduras**: NestJS 11.2, MikroORM 6.6, TypeScript 5.9 (só typecheck; o Bun transpila), Testcontainers 11, zod 4, Bun 1.4.2. Dependências com versão exata | NestJS 12 (lançado há 6 semanas), MikroORM 7, TypeScript 7 (compilador nativo) | upgrade de major planejado depois da entrega, com a suíte de testes como rede |
 | ADR-23 | **Balanceador nginx** na frente das réplicas no Compose, com `resolve` dinâmico, `proxy_connect_timeout 1s` e nova tentativa em outra réplica (só GET; POST nunca é repetido pelo proxy) | Traefik; acessar réplicas por portas diferentes | uma peça a mais; em produção seria o load balancer da plataforma |
 | ADR-24 | **Sessão única por jogador fora do núcleo**: a proteção financeira contra jogar o mesmo saldo em dois jogos é o lock da wallet + `CHECK (balance >= 0)`. Fica uma porta `PlayerSessionPolicy` (no-op) chamada antes de cada `BET`, com `failureCode` reservado `CONCURRENT_GAME_NOT_ALLOWED`, e um alerta antifraude de jogos simultâneos | bloquear `BET` em outro jogo até a rodada anterior terminar | sem sinal confiável de fim de rodada; um `LOSS` perdido travaria o jogador |
@@ -73,14 +80,25 @@ Ver [docs/01 §7–8](./docs/01-analise-requisitos.md#7-taxonomia-de-failurecode
 
 ## Observabilidade
 
-Detalhes, catálogo de métricas, dashboards e alertas: [docs/06-observabilidade.md](./docs/06-observabilidade.md). Erros HTTP seguem RFC 9457 (`application/problem+json`) com `failureCode` e `correlationId`.
+Implementado (§12): erros HTTP em RFC 9457 (`application/problem+json`) com `failureCode` e `correlationId`, e:
 
-- **Logs:** JSON (pino) com `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`. Redaction de payloads e valores.
-- **Métricas** (`/metrics`, Prometheus):
-  - `wager_transactions_total{status,kind}`, `duplicates_detected_total{source}`, `retries_total{component}`;
-  - `dlq_messages_total`, `lock_conflicts_total`, `outbox_lag_seconds`, `processing_duration_seconds` (histograma);
-  - `reconciliation_divergence_total`.
-- **Health:** `/health/live` (processo) e `/health/ready` (Postgres `SELECT 1` + SQS `GetQueueAttributes`).
+- **Logs** JSON (pino) com `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId` (via `AsyncLocalStorage`); valores monetários, payloads e credenciais mascarados (teste em `test/unit/infrastructure/logger.spec.ts`).
+- **Métricas** em `/metrics` (Prometheus, **por instância** — ADR-28):
+
+| Exigência do §12 | Métrica |
+|---|---|
+| transações por status | `wagering_transactions_total{kind,status,source}` |
+| duplicatas detectadas | `wagering_duplicates_detected_total{source,type}` (`idempotent_replay`, `payload_conflict`, `key_mismatch`, `inbox_duplicate`) |
+| retries | `wagering_retries_total{component}` (`consumer`, `outbox`, `pending_worker`) |
+| mensagens em DLQ | `wagering_dlq_messages_total{reason}` |
+| conflitos de lock | `wagering_lock_conflicts_total`, `wagering_lock_wait_seconds`, `wagering_lock_timeouts_total` |
+| outbox lag | `wagering_outbox_lag_seconds`, `wagering_outbox_published_total` |
+| latência de processamento | `wagering_processing_duration_seconds{kind,status,source}` |
+| extras | `wagering_queue_wait_seconds`, `wagering_pending_references`, `wagering_errors_total`, `wagering_reconciliation_divergence_total` |
+
+- **Health:** `/health/live` (processo) e `/health/ready` (Postgres `SELECT 1` + SQS `GetQueueAttributes`), abertos.
+
+Planejado como diferencial (I8, [docs/06](./docs/06-observabilidade.md)): OpenTelemetry, Grafana, alertas e relatório de incidente por e-mail.
 
 ## Escalabilidade
 
@@ -109,16 +127,16 @@ Detalhes, catálogo de métricas, dashboards e alertas: [docs/06-observabilidade
 | **Cota do SQS FIFO** | ~300 req/s por ação sem lote; ~3.000 com lote; mais no modo *high throughput* | publicação e consumo em lote |
 | **Amplificação de escrita da auditoria** | replays também gravam auditoria | aceito (ADR-19); é o custo de auditar tudo |
 
-### Entra agora (no escopo)
+### Medidas imediatas — situação
 
-| # | Medida | Onde |
+| # | Medida | Situação |
 |---|---|---|
-| S-1 | Publicação da outbox com `SendMessageBatch` (até 10 por chamada) e consumo com `MaxNumberOfMessages=10` | E4-2, E5-1 |
-| S-2 | Job de retenção: remove, em lotes pequenos, inbox processada e outbox publicada há mais de 7 dias (configurável). Ledger e auditoria são intocáveis (trigger) | E4-4 |
-| S-3 | Conexão de leitura separada (`DATABASE_READ_URL`, padrão = primário) para listagem do ledger, reconciliação, notificador e Grafana. Consultas logo após uma escrita (`GET` da transação/wallet) continuam no primário (*read-your-writes*) | E2-5 |
-| S-4 | Pool por instância configurável (`DB_POOL_MAX`), com a conta de conexões documentada no README | E0-3 |
-| S-5 | Timeouts com `SET LOCAL` (escopo de transação), compatível com um pooler no futuro | E3-1 |
-| S-6 | Teste de escala horizontal (ST-08): mesma carga com 1 e 3 instâncias, registrando ganho e onde satura (CPU do banco, locks, pool) | E8-4 |
+| S-1 | Outbox com `SendMessageBatch` (até 10) e consumo com `MaxNumberOfMessages=10` | ✅ implementado |
+| S-2 | Job de retenção de inbox processada e outbox publicada (> 7 dias) | 🟡 adiado para a I8 (diferencial); as tabelas crescem até lá |
+| S-3 | Conexão de leitura separada (`DATABASE_READ_URL`) | 🟡 adiado para a I8; a variável já é aceita, mas toda leitura usa o primário |
+| S-4 | Pool por instância configurável (`DB_POOL_MAX`), conta de conexões no README | ✅ implementado |
+| S-5 | Timeouts com `SET LOCAL` (compatível com pooler) | ✅ implementado |
+| S-6 | Teste de escala 1 × 3 instâncias | 🟡 adiado para a I8 (com o teste de carga); a correção com 3 instâncias está provada em CT-04/CT-08 |
 
 ### Caminho de evolução (documentado, não implementado)
 
@@ -137,9 +155,23 @@ Cada passo é disparado por um **sinal medido** nos dashboards, nunca por anteci
 
 ## Limitações conhecidas
 
-- Moeda com escala fixa de 2 casas. Reversão parcial está fora do escopo.
-- Hot wallet tem throughput limitado pela serialização (por desenho).
-- Entrega de eventos é *at-least-once*: consumidores precisam deduplicar por `eventId`.
-- Reconciliação é sob demanda (não há job periódico).
+**Por escopo do desafio**
+- Moeda com escala fixa de 2 casas (multi-moeda sim, escalas diferentes não); reversão parcial fora do escopo.
+- Autenticação não implementada (ADR-16): `AuthGuard` no-op; qualquer cliente que alcance a API pode submeter transações.
 
-_Seções a completar durante a implementação: resultados de carga, decisões revistas._
+**Por desenho (trade-offs aceitos)**
+- Hot wallet: operações da mesma wallet são serializadas pelo lock — o throughput por wallet é limitado pela duração da transação SQL (ADR-03).
+- O PostgreSQL primário é o teto de escrita (ver Escalabilidade).
+- Eventos de integração são *at-least-once*: consumidores devem deduplicar por `eventId` (o FIFO deduplica dentro de 5 min).
+- Referência que chega depois de ~4 min (10 tentativas) ou do TTL de 15 min resulta em `REFERENCE_NOT_FOUND` definitivo (ADR-12).
+- Uma rejeição por conflito de idempotência não é persistida como transação (fica só na auditoria da original).
+
+**Operacionais**
+- Métricas são por instância: o Prometheus precisa coletar cada réplica, não o balanceador (ADR-28).
+- No `SIGTERM`, o NestJS encerra graciosamente e **re-emite o sinal**: o processo termina "por sinal", não com código 0 (o orquestrador deve tratar isso como encerramento normal).
+- Reconciliação é sob demanda (não há job periódico); retenção de inbox/outbox ainda não implementada (S-2).
+- Sem limitação de taxa por provedor/jogador e sem dashboards/alertas prontos (diferenciais da I8).
+
+**Do ambiente**
+- Bun 1.4.2: `toMatchObject` com `expect.any()` altera o objeto testado (contornado nos testes, docs/04).
+- O SDK OpenTelemetry e o `dd-trace` têm suporte parcial no Bun — por isso a observabilidade avançada ficou para a I8, com spike prévio.

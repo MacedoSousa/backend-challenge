@@ -30,7 +30,7 @@ flowchart TB
             Q2["wager-transactions-dlq.fifo"]
             Q3["wagering-events.fifo"]
         end
-        INIT["init: cria filas<br/>+ redrive policy"]
+        INIT["setup (one-shot):<br/>migrations + filas + redrive"]
     end
     A1 & A2 & A3 --> PG
     A1 & A2 & A3 <--> Q1
@@ -38,6 +38,7 @@ flowchart TB
     A1 & A2 & A3 --> Q3
     Q1 -. "maxReceiveCount=5" .-> Q2
     INIT --> LS
+    INIT --> PG
 ```
 
 ## 3. Componentes (hexagonal)
