@@ -28,12 +28,14 @@ Uma história só entra na iteração se tiver:
 
 ## 4. Priorização (MoSCoW)
 
+Revisada após a análise de conformidade ([07-conformidade.md](./07-conformidade.md)): **todo o obrigatório do enunciado vem antes de qualquer diferencial**.
+
 | Prioridade | Itens |
 |---|---|
-| **Must** | Money, Wallet, ledger, transações e regras, idempotência, concorrência, inbox, outbox, SQS + DLQ, pending reference worker, reconciliação, health, testes obrigatórios, README/ARCHITECTURE |
-| **Should** | Métricas Prometheus, graceful shutdown completo, cursor opaco no ledger, problem details |
-| **Could** | Teste de carga (`test:load`), OpenTelemetry + dashboards e alertas no Grafana, ledger double-entry |
-| **Won't (agora)** | Autenticação real com IdP (fica `AuthGuard` no-op + desenho documentado), reversão parcial, multi-moeda com escalas diferentes de 2 |
+| **Must** (pontuam no §14) | Money, Wallet, ledger, transações e regras, idempotência, concorrência, inbox, outbox, SQS + DLQ, worker de pendências com backoff/limite (§7.1), reconciliação, health, **métricas obrigatórias do §12** (`/metrics`), logs estruturados, testes obrigatórios do §13, README/ARCHITECTURE |
+| **Should** | Trilha de auditoria (sustenta o "auditável" da regra 9 e do §6.3), graceful shutdown completo, cursor opaco no ledger, problem details, `PlayerSessionPolicy` no-op |
+| **Could** (diferenciais, só após o Must) | Teste de carga (`test:load`), OpenTelemetry + Grafana, e-mail de incidente, alertas antifraude, retenção de inbox/outbox, conexão de leitura separada, teste de escala 1×3, ledger double-entry |
+| **Won't (agora)** | Autenticação real com IdP (fica `AuthGuard` no-op + desenho documentado), reversão parcial, multi-moeda com escalas diferentes de 2, Kubernetes |
 
 ## 5. Épicos e histórias
 
@@ -71,7 +73,7 @@ Estimativa em *story points* (Fibonacci). Prefixo da história = épico.
 | E2-4 | `POST /wallets/:id/reconciliation` com métrica e log de divergência | 3 |
 | E2-5 | Conexão de leitura separada (`DATABASE_READ_URL`) para ledger, reconciliação, notificador e Grafana; *read-your-writes* no primário | 2 |
 
-**Aceite E2-2:** *Given* um `playerId` sem wallet BRL, *When* `POST /wallets` com `1000.00`, *Then* `201`, `version 1`, existe uma transação `OPENING PROCESSED` e um `CREDIT 1000.00`; *When* repito, *Then* `409 WALLET_ALREADY_EXISTS`.
+**Aceite E2-2:** *Given* um `playerId` sem wallet BRL, *When* `POST /wallets` com `1000.00`, *Then* `201`, `version 1`, existe uma transação `OPENING PROCESSED` e um `CREDIT 1000.00`; *When* repito, *Then* `409 WALLET_ALREADY_EXISTS`. Na mesma transação SQL, a outbox recebe `WagerTransactionProcessed` (do `OPENING`) e `WalletBalanceChanged` (§11: "qualquer transação aplicada"); com saldo inicial `0.00`, nenhum lançamento e nenhum `WalletBalanceChanged`.
 
 ### E3 — Processamento de transações (HTTP)
 | ID | História | Pts |
@@ -120,7 +122,7 @@ Estimativa em *story points* (Fibonacci). Prefixo da história = épico.
 ### E7 — Observabilidade e operação
 | ID | História | Pts |
 |---|---|---|
-| E7-1 | Métricas (`/metrics`): status, duplicatas, retries, DLQ, conflitos de lock, outbox lag, latência | 3 |
+| E7-1 | Métricas obrigatórias do §12 (`/metrics`), **incrementais a partir da I3**: status, duplicatas, retries, DLQ, conflitos de lock, outbox lag, latência | 3 |
 | E7-2 | `GET /health/live` e `/health/ready` | 1 |
 | E7-3 | Redaction de dados sensíveis nos logs | 1 |
 | E7-4 | Instrumentação OpenTelemetry (traces por use case + métricas de negócio do catálogo) | 5 |
@@ -152,38 +154,42 @@ Estimativa em *story points* (Fibonacci). Prefixo da história = épico.
 
 ## 6. Plano de iterações
 
-Total estimado: ~180 pts. As iterações são incrementos, não datas — a cadência real depende da disponibilidade.
+Total estimado: ~177 pts (≈140 obrigatórios + ≈37 de diferenciais). As iterações são incrementos, não datas — a cadência real depende da disponibilidade.
 
 ```mermaid
 gantt
     dateFormat X
     axisFormat %s
-    title Iterações (ordem e dependências)
-    section Fundação
-    I0 Fundação (E0)                    :i0, 0, 13
-    section Núcleo
-    I1 Domínio puro (E1)                :i1, after i0, 23
-    I2 Wallets + schema (E2)            :i2, after i1, 16
-    section Transações
-    I3 Processamento HTTP (E3)          :i3, after i2, 35
-    section Mensageria
-    I4 Outbox (E4)                      :i4, after i3, 13
-    I5 SQS + pending ref (E5, E6)       :i5, after i4, 24
-    section Qualidade
-    I6 Observabilidade + resiliência (E7, E8) :i6, after i5, 48
-    I7 Documentação final (E9)          :i7, after i6, 5
+    title Iterações (obrigatório primeiro, diferenciais por último)
+    section Concluído
+    I0 Fundação                              :done, i0, 0, 14
+    I1 Domínio puro                          :done, i1, after i0, 23
+    section Obrigatório
+    I2 Wallets + schema                      :i2, after i1, 14
+    I3 Processamento HTTP + métricas         :i3, after i2, 38
+    I4 Outbox                                :i4, after i3, 11
+    I5 SQS + referências pendentes           :i5, after i4, 24
+    I6 Concorrência e crash (§13)            :i6, after i5, 11
+    I7 Documentação de entrega               :i7, after i6, 5
+    section Diferenciais
+    I8 Carga, Grafana, e-mail, antifraude    :i8, after i7, 37
 ```
 
-| Iteração | Meta (incremento) | Demonstração |
-|---|---|---|
-| **I0** ✅ | Esqueleto rodando | `docker compose up` + health verde + 1 teste de integração |
-| **I1** | Domínio provado por testes | `bun test test/unit` 100% verde, sem Nest/ORM no domínio |
-| **I2** | Wallets persistidas com constraints | criar/consultar wallet; teste prova que `UPDATE` no ledger falha |
-| **I3** | Transações via HTTP corretas sob concorrência | cenário 2× `BET 80` e 50 requisições paralelas idênticas |
-| **I4** | Eventos confiáveis | matar processo entre commit e publish; evento chega |
-| **I5** | Fila e fora de ordem | `ROLLBACK` antes da `BET` resolve sozinho |
-| **I6** | Operável e medido | 3 instâncias, crash tests, dashboards, e-mail de incidente no Mailpit, relatório de carga |
-| **I7** | Entregável | README + ARCHITECTURE revisados |
+| Iteração | Histórias | Meta (incremento) | Demonstração |
+|---|---|---|---|
+| **I0** ✅ | E0-1..5, E7-2 | Esqueleto rodando | `docker compose up` + health verde + testes de integração |
+| **I1** ✅ | E1-1..6 + política de retry (§7.1) | Domínio provado por testes | 208 testes de unidade, teste de arquitetura |
+| **I2** | E2-1..4 | Wallets persistidas com constraints | criar/consultar wallet com eventos do `OPENING`; `UPDATE` no ledger falha |
+| **I3** | E3-1..9, **E7-1** | Transações via HTTP corretas sob concorrência, já medidas | 2× `BET 80`, 50 requisições idênticas, `/metrics` com status, duplicatas e conflitos de lock |
+| **I4** | E4-1..3 | Eventos confiáveis | processo morto entre commit e publish; evento chega; métrica de outbox lag |
+| **I5** | E5-1..4, E6-1..3 | Fila e fora de ordem | `ROLLBACK` antes da `BET` resolve sozinho; métricas de retries e DLQ |
+| **I6** | E8-1, E8-2, E7-3 | Todos os testes de concorrência do §13 | ≥ 3 processos, crash após commit/antes do ack, reinício |
+| **I7** | E9-1..3 | Entregável completo | README + ARCHITECTURE revisados; conformidade 100% |
+| **I8** | E2-5, E4-4, E7-4..9, E8-3, E8-4 | Diferenciais | `test:load`, Grafana, e-mail de incidente, antifraude |
+
+> **I1 entregue:** 208 testes de unidade (cobertura do domínio ≈ 95% das linhas) + teste de arquitetura que impede o domínio de importar framework/ORM/SDK e de converter valores para `number`. UT-A01 (auditoria por transição) foi para a I3, porque a auditoria é efeito do use case, não do agregado.
+
+**Métricas obrigatórias nascem com cada peça** (§12), não no fim: I3 expõe `/metrics` com transações por status, duplicatas, conflitos de lock e latência; I4 acrescenta outbox lag; I5 acrescenta retries e DLQ. A I8 só adiciona painéis e alertas sobre o que já existe.
 
 ## 7. Riscos
 

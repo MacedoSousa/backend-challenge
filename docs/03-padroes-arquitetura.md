@@ -277,14 +277,32 @@ CREATE INDEX ix_outbox_due ON outbox_messages (next_attempt_at) WHERE published_
 | Transitório | Postgres fora, `lock_timeout`, falha de rede | não deleta; `ChangeMessageVisibility` com backoff; depois de 5 recebimentos o redrive manda para a DLQ |
 | Permanente | JSON inválido, schema inválido, `type` desconhecido, payload divergente do inbox | `SendMessage` para a DLQ + `DeleteMessage` (sem esperar o redrive) |
 
-## 9. Worker de referências pendentes
+## 9. Worker de referências pendentes (§7.1)
 
 - Faz claim com `FOR UPDATE SKIP LOCKED` sobre `status = 'PENDING_REFERENCE' AND next_attempt_at <= now()`. Assim, várias instâncias trabalham em paralelo sem pegar a mesma linha.
-- Reprocessa com o mesmo serviço de domínio do use case, travando a wallet primeiro.
-- Backoff: `min(2^attempts × 1s, 60s)` com jitter. **Limite: 10 tentativas, ou TTL de 15 min** (o que vier primeiro).
-  - Justificativa: provedores costumam reenviar em segundos, e manter apostas pendentes por muito tempo atrasa a reconciliação.
-- Esgotado o limite: `REJECTED REFERENCE_NOT_FOUND` + evento `WagerTransactionRejected`.
+- Para cada pendência, **primeiro tenta resolver a referência** (travando a wallet e a referência, pelo mesmo fluxo do use case). Só se ela continuar ausente consulta a política.
+- A decisão é da `ReferenceRetryPolicy` (domínio, pura e testada — UT-R01..R06):
+
+| Parâmetro | Valor | Justificativa |
+|---|---|---|
+| Primeira tentativa | 1 s após virar `PENDING_REFERENCE` | a referência costuma chegar em milissegundos/segundos |
+| Backoff | `min(1 s × 2ⁿ, 60 s)` + jitter de até 20% | sequência 1, 2, 4, 8, 16, 32, 60, 60, 60, 60 s; o jitter evita que pendências da mesma rajada acordem juntas |
+| Limite de tentativas | **10** (≈ 4 min no total) | provedores reenviam a referência em segundos; mais tempo só atrasa a reconciliação do provedor |
+| TTL | **15 min** desde a criação | rede de segurança quando o worker ficou parado; avaliado antes do limite de tentativas |
+| Esgotado | `REJECTED REFERENCE_NOT_FOUND` + evento `WagerTransactionRejected` na outbox, na mesma transação | exigido pelo §7.1; o provedor recebe um código estável e pode conciliar |
+
 - Otimização opcional: ao processar uma transação, agendar `next_attempt_at = now()` para as dependentes que apontam para ela.
+
+### 9.1 Todas as políticas de retry do sistema
+
+| Laço | Gatilho | Backoff | Limite | Ao esgotar | Métrica (§12) |
+|---|---|---|---|---|---|
+| **Referência pendente** (§7.1) | referência ainda ausente | `min(1 s × 2ⁿ, 60 s)` + jitter 20% | 10 tentativas ou TTL 15 min | `REJECTED REFERENCE_NOT_FOUND` + evento | `retries_total{component="pending_worker"}`, `pending_references` |
+| **Consumidor SQS** (§10) | erro transitório (Postgres/SQS fora, `lock_timeout`) | `ChangeMessageVisibility` = `min(2ⁿ s, 300 s)` + jitter, com n = `ApproximateReceiveCount` | `maxReceiveCount = 5` | redrive automático para a DLQ | `retries_total{component="consumer"}`, `dlq_messages_total` |
+| **Consumidor SQS** — erro permanente | JSON/schema inválido, `type` desconhecido, payload divergente no inbox | sem retry | — | DLQ imediata + `DeleteMessage` | `dlq_messages_total{reason}` |
+| **Consumidor SQS** — erro de negócio | ex.: `INSUFFICIENT_FUNDS` | sem retry (resultado já persistido) | — | ack | `wager_transactions_total{status="REJECTED"}` |
+| **Publisher da outbox** (§11) | falha ao publicar no SQS | `min(1 s × 2ⁿ, 5 min)` (`OutboxMessage.scheduleRetry`) | **sem limite**: um evento confirmado nunca é descartado | alerta de `outbox_lag_seconds`; o lease garante que outra instância assuma | `retries_total{component="outbox"}`, `outbox_lag_seconds` |
+| **Lock da wallet** (HTTP) | `lock_timeout` de 5 s | sem retry no servidor | — | `503` + `Retry-After`; o provedor reenvia com a mesma `Idempotency-Key` (seguro por idempotência) | `lock_timeouts_total`, `lock_conflicts_total` |
 
 ## 10. Convenções de código
 

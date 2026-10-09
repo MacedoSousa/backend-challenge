@@ -2,7 +2,7 @@
 
 Serviço financeiro distribuído que processa transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) de múltiplos provedores, com correção sob duplicidade, entrega fora de ordem e concorrência entre instâncias.
 
-> 🚧 **Status:** Iteração 0 concluída (fundação: NestJS em Bun, Compose com 3 réplicas, MikroORM, Testcontainers). Próxima: Iteração 1 — domínio. Ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações).
+> 🚧 **Status:** Iterações 0 (fundação) e 1 (domínio puro em TDD: `Money`, `Wallet`, ledger, `WagerTransaction`, `ReferencePolicy`, `ReferenceRetryPolicy`, eventos, inbox/outbox — 208 testes de unidade) concluídas. Conformidade com o enunciado em [docs/07](./docs/07-conformidade.md). Próxima: Iteração 2 — persistência das wallets. Ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações).
 
 ## Stack
 
@@ -76,4 +76,5 @@ Toda a configuração vem de variáveis de ambiente, validadas no boot (`src/con
 | [docs/04-estrategia-testes.md](./docs/04-estrategia-testes.md) | TDD, cenários unitários, integração, concorrência e carga |
 | [docs/05-diagramas.md](./docs/05-diagramas.md) | contexto, deploy, componentes, ER, estados, sequências, reversão e auditoria |
 | [docs/06-observabilidade.md](./docs/06-observabilidade.md) | métricas, traces, logs, dashboards, alertas e notificações (stack gratuito) |
+| [docs/07-conformidade.md](./docs/07-conformidade.md) | matriz item do enunciado (§1–§14) → onde é atendido → teste → situação |
 | [docs/CHALLENGE.md](./docs/CHALLENGE.md) | enunciado original |

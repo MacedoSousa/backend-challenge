@@ -63,6 +63,8 @@ docker compose --profile observability up -d
 
 ## 3. Catálogo de métricas
 
+> **Prioridade:** as métricas exigidas pelo §12 (transações por status, duplicatas, retries, DLQ, conflitos de lock, outbox lag, latência) são **obrigatórias** e nascem junto com cada peça (I3 a I5), expostas em `/metrics`. Grafana, alertas e e-mail (§6 a §8 deste documento) são **diferenciais** da I8.
+
 Prefixo `wagering_`. **As tags nunca incluem** `walletId`, `playerId`, `transactionId` nem valores (por cardinalidade e privacidade). Esses campos ficam só em logs e traces.
 
 | Métrica | Tipo | Tags | Responde |

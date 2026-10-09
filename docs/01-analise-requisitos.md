@@ -23,7 +23,7 @@ O enunciado deixa claro: não é CRUD. A nota vem de **correção sob falha e co
 
 | ID | Requisito | Origem |
 |---|---|---|
-| RF-01 | Criar wallet com saldo inicial; saldo > 0 gera transação `OPENING` + ledger `CREDIT` na mesma transação SQL | §9 |
+| RF-01 | Criar wallet com saldo inicial; saldo > 0 gera transação `OPENING` + ledger `CREDIT` + eventos `WagerTransactionProcessed` e `WalletBalanceChanged` na outbox, tudo na mesma transação SQL | §9, §11 |
 | RF-02 | Uma wallet por `playerId + currency`; duplicada → conflito | §6.2, §9 |
 | RF-03 | Consultar wallet, ledger paginado (cursor opaco e estável), transação por id interno e por `(providerId, externalTransactionId)` | §9 |
 | RF-04 | Submeter `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK` via HTTP com `Idempotency-Key` obrigatório | §9 |
@@ -92,9 +92,9 @@ Cada decisão vira uma entrada no `ARCHITECTURE.md`.
 | D-03 | Wallet inexistente no `POST /wagering/transactions` | `404 WALLET_NOT_FOUND`, **não persistido** (não há wallet para FK); na fila é erro de negócio → ack | Não há agregado para auditar; resposta é determinística |
 | D-04 | `Idempotency-Key` × `(providerId, externalTransactionId)` | Ambos únicos. Mesmo `(provider, externalId)` com key diferente → `409 IDEMPOTENCY_KEY_MISMATCH` | Evita a mesma operação do provedor entrar duas vezes por keys diferentes |
 | D-05 | Replay deve devolver "o saldo observado naquele momento" | Transação guarda `balance_after` (snapshot), inclusive para `LOSS` e `REJECTED` | `LOSS` não tem ledger; não dá para derivar o saldo depois |
-| D-06 | Formato de entrada de `amount` | Regex estrita `^\d{1,18}(\.\d{1,2})?$`; normaliza para 2 casas antes do hash | Aceita `"25"`/`"25.5"`, rejeita `1e3`, `-1`, `"25.001"`, `""` |
+| D-06 | Formato de entrada de `amount` | **Estrito** (revisado após a análise de conformidade): só a forma canônica `^(0\|[1-9]\d{0,17})\.\d{2}$`. Rejeita `"25"`, `"25.5"`, `"007.00"`, `1e3`, `-1.00`, `"25.001"`, `""`. Sem arredondamento nem normalização | §6.1: *"recebido e serializado como string decimal, sempre com escala fixa de 2 casas"*; elimina ambiguidade no `payloadHash` |
 | D-07 | Valor zero | `amount > 0` para todos os kinds, exceto `LOSS` (aceita `>= 0`) | `BET 0.00` não tem semântica financeira |
-| D-08 | Destino dos eventos não é especificado | Fila `wagering-events.fifo`, `MessageGroupId = aggregateId`, `MessageDeduplicationId = eventId` | Ordem por wallet e dedup de 5 min como otimização |
+| D-08 | Destino dos eventos não é especificado | Fila `wagering-events.fifo`, `MessageGroupId = aggregateId`, `MessageDeduplicationId = eventId`. O `aggregateId` de **todos** os eventos é o `walletId`, para que os eventos de uma wallet saiam em ordem | Ordem por wallet e dedup de 5 min como otimização |
 | D-09 | Quando usar `FAILED` | Transação já persistida cujo reprocessamento esgota tentativas por erro de **infraestrutura** | `REJECTED` = negócio; `FAILED` = infra, terminal e auditável |
 | D-10 | `ROLLBACK` de `REFUND`/`WIN` que deixaria saldo negativo | `REJECTED` com `REVERSAL_INSUFFICIENT_FUNDS` (≠ `INSUFFICIENT_FUNDS`) | Exigido pela regra 9 |
 | D-11 | `OPENING` não tem round/game/provider | `provider_id = 'internal'`, `idempotency_key = 'internal:opening:{walletId}'`, `round_id/game_id` nulos só para `OPENING` (`CHECK`) | Mantém a tabela única de transações |
