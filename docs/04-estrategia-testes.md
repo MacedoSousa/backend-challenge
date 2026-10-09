@@ -149,6 +149,7 @@ flowchart LR
 | CT-09 | hot wallet | 200 operações mistas (BET/WIN/REFUND) na mesma wallet a partir de 3 instâncias | saldo final = cálculo esperado; sequência `wallet_version` sem buracos |
 | CT-10 | reversões concorrentes da mesma `BET` | `REFUND` e `ROLLBACK` simultâneos, repetido 50× | exatamente 1 `PROCESSED`, outro `REFERENCE_ALREADY_REVERSED` apontando o vencedor; 1 `CREDIT`; auditoria da `BET` com 1 `REVERSED_BY` |
 | CT-11 | `SIGTERM` com mensagem em voo | sinal durante o processamento | mensagem concluída e deletada, ou visibilidade devolvida; sem efeito duplo |
+| CT-12 | **gasto simultâneo do mesmo saldo** (vários aparelhos/jogos) | wallet com `100.00`; 20 `BET` simultâneas (valores variados, 5 `gameId` diferentes, keys distintas) distribuídas entre as 3 instâncias, repetido 20× | soma das aprovadas ≤ `100.00`; demais `REJECTED INSUFFICIENT_FUNDS`; saldo final = `100.00` − soma aprovada, nunca negativo; versões do ledger contíguas, sem repetição; cada `balance_before` = `balance_after` anterior. Apostas que cabem no saldo passam mesmo em paralelo (decisão: paralelismo permitido) |
 
 **Fault injection:** pontos nomeados (`after-commit-before-ack`, `after-commit-before-publish`, `before-commit`) ativados só quando `NODE_ENV=test`, via uma porta `FaultInjector` (no-op em produção).
 
@@ -187,7 +188,7 @@ Ferramenta: **k6** em container (gera p50/p95/p99 nativamente). Ambiente: `docke
 | Retry e DLQ | IT-13..15 |
 | Recuperação após reinício | IT-18, CT-08 |
 | 50× paralelo | CT-01 |
-| Saldo disputado | CT-02 |
+| Saldo disputado | CT-02, CT-12 |
 | Wallets distintas | CT-03 |
 | ≥ 3 instâncias | CT-04 |
 | Crash após commit / antes do ack | CT-05 |
