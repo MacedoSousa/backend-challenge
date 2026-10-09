@@ -1,0 +1,70 @@
+name: wagering
+
+x-app-env: &app-env
+  NODE_ENV: production
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
+  DB_POOL_MAX: ${DB_POOL_MAX:-10}
+  AWS_REGION: us-east-1
+  AWS_ENDPOINT_URL: http://localstack:4566
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: wagering
+      POSTGRES_USER: wagering
+      POSTGRES_PASSWORD: wagering
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wagering -d wagering"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  localstack:
+    image: localstack/localstack:4
+    environment:
+      SERVICES: sqs
+    ports: ["4566:4566"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS localhost:4566/_localstack/health | grep -q '\"sqs\": \"\\(available\\|running\\)\"'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # one-shot: migrations + filas (idempotente)
+  setup:
+    build: .
+    image: wagering-processor:local
+    command: ["bun", "src/setup.ts"]
+    environment: *app-env
+    depends_on:
+      postgres: { condition: service_healthy }
+      localstack: { condition: service_healthy }
+    restart: "no"
+
+  app:
+    image: wagering-processor:local
+    environment:
+      <<: *app-env
+      APP_ROLE: ${APP_ROLE:-all}
+    deploy:
+      replicas: ${APP_REPLICAS:-3}
+    stop_grace_period: 30s
+    depends_on:
+      setup: { condition: service_completed_successfully }
+
+  # balanceador round-robin entre as réplicas (http://localhost:3000)
+  lb:
+    image: nginx:1.28-alpine
+    ports: ["3000:80"]
+    volumes: ["./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro"]
+    depends_on:
+      app: { condition: service_healthy }
+
+volumes:
+  pgdata:

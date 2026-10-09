@@ -87,7 +87,7 @@ Cada decisão vira uma entrada no `ARCHITECTURE.md`.
 
 | # | Ponto ambíguo no enunciado | Decisão | Motivo |
 |---|---|---|---|
-| D-01 | §7 regra 4: "não pode ser revertida duas vezes **pelo mesmo tipo**". Literalmente permite `REFUND` **e** `ROLLBACK` sobre a mesma `BET` → crédito duplo | Uma transação pode ser revertida **uma única vez, por qualquer tipo**. `REFUND` e `ROLLBACK` são duas portas para **o mesmo fluxo de reversão**; a primeira a chegar vence. A perdedora é `REJECTED REFERENCE_ALREADY_REVERSED`, com a vencedora registrada (`relatedTransactionId`) na resposta e na auditoria | A invariante "não duplicar créditos" prevalece sobre a leitura literal. Esperar para "confirmar que não haverá rollback" foi descartado: não existe sinal de fim de rodada, ambas creditam o mesmo valor sobre uma `BET` e a espera atrasaria todo reembolso |
+| D-01 | §7 regra 4: "não pode ser revertida duas vezes **pelo mesmo tipo**". Literalmente permite `REFUND` **e** `ROLLBACK` sobre a mesma `BET` → crédito duplo | Uma transação pode ser revertida **uma única vez, por qualquer tipo**. `REFUND` e `ROLLBACK` são duas portas para **o mesmo fluxo de reversão**; a primeira a chegar vence. A perdedora é `REJECTED REFERENCE_ALREADY_REVERSED`, com a vencedora registrada (`relatedTransactionId`) na resposta e na auditoria | A invariante "não duplicar créditos" prevalece sobre a leitura literal. Esperar para "confirmar que não haverá rollback" foi descartado: não existe sinal de fim de rodada, ambas creditam o mesmo valor sobre uma `BET` e a espera atrasaria todo reembolso. Uma checagem por **usuário + valor numa janela de 1 h** (com resposta "aguarde") também foi descartada: bloqueia devoluções legítimas de apostas diferentes com o mesmo valor, deixa passar duplicatas após a janela, corre risco de corrida sem lock e não é idempotente (a resposta muda com o horário) |
 | D-02 | `WIN` "pode referenciar" a `BET` | Referência opcional; se informada, é validada como as demais e pode ficar `PENDING_REFERENCE` | Consistência das regras de referência |
 | D-03 | Wallet inexistente no `POST /wagering/transactions` | `404 WALLET_NOT_FOUND`, **não persistido** (não há wallet para FK); na fila é erro de negócio → ack | Não há agregado para auditar; resposta é determinística |
 | D-04 | `Idempotency-Key` × `(providerId, externalTransactionId)` | Ambos únicos. Mesmo `(provider, externalId)` com key diferente → `409 IDEMPOTENCY_KEY_MISMATCH` | Evita a mesma operação do provedor entrar duas vezes por keys diferentes |
@@ -105,6 +105,8 @@ Cada decisão vira uma entrada no `ARCHITECTURE.md`.
 | D-16 | Referência `REJECTED`/`FAILED` | Dependente → `REJECTED` com `REFERENCE_NOT_PROCESSED` | Não se reverte o que não foi aplicado |
 | D-17 | Moeda | Implementação assume `BRL`, mas `Money` é multi-moeda e conflitos são testados | Permitido pelo §6.1 |
 | D-18 | "Auditável" aparece no enunciado só para `FAILED` e reversões | **Toda decisão** sobre uma transação é auditada em tabela própria, append-only, gravada na mesma transação SQL da decisão, inclusive replays e conflitos de idempotência. Exposta em `GET /wagering/transactions/:id/audit` | Responder "para onde foi o dinheiro e o que aconteceu" só com SQL, sem depender de logs que expiram |
+| D-19 | "Um jogo por vez" por jogador (evitar usar o mesmo saldo em dois aparelhos) | **Não é aplicado neste serviço.** O saldo único sob lock da wallet + `CHECK (balance >= 0)` + sequência de versões do ledger impedem **gastar o saldo simultaneamente mais de uma vez**, em qualquer jogo ou aparelho (CT-12). Apostas paralelas cuja soma cabe no saldo **são permitidas** (decisão confirmada). A sessão única é responsabilidade da plataforma (login / lançamento do jogo). Aqui ficam: um ponto de extensão `PlayerSessionPolicy` (no-op) antes de cada `BET` e um alerta antifraude de jogos simultâneos | o serviço não conhece sessões nem aparelhos; sem sinal confiável de fim de rodada, um bloqueio travaria jogadores quando um `LOSS` se perdesse |
+| D-20 | Natureza do `playerId` | **Premissa:** ID opaco emitido pela plataforma, em formato UUID (validado no contrato), **nunca** CPF, e-mail ou telefone. Circula só entre servidores (provedor → API) e dentro do banco; consultas sempre parametrizadas; mascarado em e-mails e ausente de métricas | um vazamento de log ou auditoria não expõe dados pessoais; UUID aleatório não é adivinhável |
 
 ## 7. Taxonomia de `failureCode`
 
@@ -128,6 +130,7 @@ Cada código carrega uma **ação recomendada** ao provedor:
 | `REFERENCE_NOT_PROCESSED` | negócio | desistir | sim |
 | `REFERENCE_ALREADY_REVERSED` | negócio | desistir | sim |
 | `AMOUNT_MISMATCH` | negócio | corrigir payload | sim |
+| `CONCURRENT_GAME_NOT_ALLOWED` | negócio (**reservado**, inativo; ver D-19) | aguardar o fim do outro jogo | sim |
 | `INFRA_UNAVAILABLE` | transitório | reenviar com backoff | não |
 | `INFRA_RETRIES_EXHAUSTED` | permanente | escalar | sim (`FAILED`) |
 

@@ -84,6 +84,7 @@ Estimativa em *story points* (Fibonacci). Prefixo da história = épico.
 | E3-6 | Consultas de transação (id interno e id do provedor) | 2 |
 | E3-7 | Cenário obrigatório: duas `BET 80.00` simultâneas sobre `100.00` | 3 |
 | E3-8 | Como auditor, quero a linha do tempo imutável de cada transação (decisões, retries, replays, conflitos, lançamento gerado, reversão relacionada) | 5 |
+| E3-9 | Porta `PlayerSessionPolicy` (no-op) chamada antes de cada `BET` + `playerId` validado como UUID no contrato | 1 |
 
 **Aceite E3-5:** *Given* uma `BET` processada, *When* chegam `REFUND` e `ROLLBACK` dela (em qualquer ordem ou em paralelo), *Then* a primeira é `PROCESSED` com um `CREDIT`, a segunda é `REJECTED REFERENCE_ALREADY_REVERSED` com `relatedTransactionId` apontando a primeira, e o saldo é creditado uma única vez.
 
@@ -128,6 +129,7 @@ Estimativa em *story points* (Fibonacci). Prefixo da história = épico.
 
 | E7-7 | Como operador, quero receber por e-mail um relatório de incidente com análise, último cliente afetado, impacto, atraso, gargalo provável, filas, desfecho e nível (crítico/médio/leve) | 8 |
 | E7-8 | Runbook por alerta em `docs/runbooks/` (linkado no e-mail) | 2 |
+| E7-9 | Alertas antifraude por SQL na auditoria: velocidade de reversões por jogador e apostas em jogos simultâneos | 2 |
 
 **Aceite E7-7:** *Given* 3 instâncias rodando, *When* forço uma mensagem para a DLQ, *Then* chega ao Mailpit um e-mail "[🟠 MÉDIO] DLQ recebendo — INC-n (DISPARADO)" com o último cliente afetado (`playerId` mascarado), o desfecho "mensagem na DLQ, transação não aplicada", a profundidade das filas e o link do runbook; *When* o Grafana reenvia o mesmo alerta, *Then* nenhum e-mail duplicado; *When* o alerta resolve, *Then* chega o e-mail "[RESOLVIDO]" com a duração.
 
@@ -150,7 +152,7 @@ Estimativa em *story points* (Fibonacci). Prefixo da história = épico.
 
 ## 6. Plano de iterações
 
-Total estimado: ~175 pts. As iterações são incrementos, não datas — a cadência real depende da disponibilidade.
+Total estimado: ~180 pts. As iterações são incrementos, não datas — a cadência real depende da disponibilidade.
 
 ```mermaid
 gantt
@@ -163,18 +165,18 @@ gantt
     I1 Domínio puro (E1)                :i1, after i0, 23
     I2 Wallets + schema (E2)            :i2, after i1, 16
     section Transações
-    I3 Processamento HTTP (E3)          :i3, after i2, 34
+    I3 Processamento HTTP (E3)          :i3, after i2, 35
     section Mensageria
     I4 Outbox (E4)                      :i4, after i3, 13
     I5 SQS + pending ref (E5, E6)       :i5, after i4, 24
     section Qualidade
-    I6 Observabilidade + resiliência (E7, E8) :i6, after i5, 46
+    I6 Observabilidade + resiliência (E7, E8) :i6, after i5, 48
     I7 Documentação final (E9)          :i7, after i6, 5
 ```
 
 | Iteração | Meta (incremento) | Demonstração |
 |---|---|---|
-| **I0** | Esqueleto rodando | `docker compose up` + health verde + 1 teste de integração |
+| **I0** ✅ | Esqueleto rodando | `docker compose up` + health verde + 1 teste de integração |
 | **I1** | Domínio provado por testes | `bun test test/unit` 100% verde, sem Nest/ORM no domínio |
 | **I2** | Wallets persistidas com constraints | criar/consultar wallet; teste prova que `UPDATE` no ledger falha |
 | **I3** | Transações via HTTP corretas sob concorrência | cenário 2× `BET 80` e 50 requisições paralelas idênticas |
@@ -187,8 +189,8 @@ gantt
 
 | Risco | Prob. | Impacto | Mitigação |
 |---|---|---|---|
-| Incompatibilidade Bun × NestJS/MikroORM (decorators, `reflect-metadata`) | média | alto | spike na I0; `experimentalDecorators` + `emitDecoratorMetadata`; fallback para entidades via `EntitySchema` |
-| Testcontainers sob Bun | média | médio | spike na I0; fallback: `docker compose -f compose.test.yml` controlado pelo setup dos testes |
+| Incompatibilidade Bun × NestJS/MikroORM (decorators, `reflect-metadata`) | ~~média~~ **resolvido na I0** | alto | ✅ DI por construtor, MikroORM e migrations em `.ts` funcionam no Bun 1.4.2 |
+| Testcontainers sob Bun | ~~média~~ **resolvido na I0** | médio | ✅ Postgres + LocalStack sobem em ~6 s; 7 testes de integração verdes |
 | Testes de concorrência intermitentes (flaky) | alta | alto | barreira de sincronização, asserts só no estado final, repetição em loop no CI |
 | Docker via snap (volumes fora do `/home`) | baixa | baixo | projeto está em `/home` |
 | Escopo excessivo | média | alto | MoSCoW; diferenciais só após I6 |
