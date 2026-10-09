@@ -1,13 +1,22 @@
 import {
   ConnectionException,
   IsolationLevel,
+  LockMode,
   LockWaitTimeoutException,
   UniqueConstraintViolationException,
 } from '@mikro-orm/core';
 import { type EntityManager, MikroORM } from '@mikro-orm/postgresql';
-import { Injectable } from '@nestjs/common';
-import { InfrastructureUnavailableError } from '../../application/errors';
+import { Inject, Injectable } from '@nestjs/common';
+import { APP_CONFIG } from '../../../config/config.module';
+import type { Env } from '../../../config/env';
+import type { OutboxMessage } from '../../../modules/messaging/domain/outbox-message';
+import type { WagerTransaction } from '../../../modules/wagering/domain/wager-transaction';
+import type { Wallet } from '../../../modules/wallet/domain/wallet';
+import type { WalletLedgerEntry } from '../../../modules/wallet/domain/wallet-ledger-entry';
+import { InfrastructureUnavailableError, LockTimeoutError } from '../../application/errors';
 import {
+  type AuditEntry,
+  type AuditRepository,
   type LedgerPage,
   type LedgerRepository,
   type LedgerSummary,
@@ -20,8 +29,14 @@ import {
   type WalletRepository,
 } from '../../application/ports';
 import { Money } from '../../domain/money';
-import { LedgerEntryMapper, OutboxMapper, WagerTransactionMapper, WalletMapper } from './mappers';
-import { LedgerEntryRecord, WagerTransactionRecord, WalletRecord } from './records';
+import {
+  AuditMapper,
+  LedgerEntryMapper,
+  OutboxMapper,
+  WagerTransactionMapper,
+  WalletMapper,
+} from './mappers';
+import { AuditRecord, LedgerEntryRecord, WagerTransactionRecord, WalletRecord } from './records';
 
 /** Erros do Postgres/rede que indicam indisponibilidade temporária (o cliente pode reenviar). */
 const TRANSIENT_CODES = new Set([
@@ -34,25 +49,41 @@ const TRANSIENT_CODES = new Set([
   '57P01', // admin_shutdown
   '57P03', // cannot_connect_now
   '53300', // too_many_connections
+  '40001', // serialization_failure
+  '40P01', // deadlock_detected
 ]);
 
 /**
  * Unit of Work sobre o MikroORM: cada execução usa um EntityManager novo (fork) e uma
- * transação própria; o flush acontece antes do COMMIT, então tudo é confirmado junto.
+ * transação própria, com `lock_timeout`/`statement_timeout` locais; o flush acontece
+ * antes do COMMIT, então tudo é confirmado junto (ADR-27).
  */
 @Injectable()
 export class MikroOrmUnitOfWork implements UnitOfWork {
-  constructor(private readonly orm: MikroORM) {}
+  constructor(
+    private readonly orm: MikroORM,
+    @Inject(APP_CONFIG) private readonly env: Env,
+  ) {}
 
   async run<T>(work: (scope: TransactionScope) => Promise<T>, options: UnitOfWorkOptions = {}) {
     try {
-      return await this.orm.em.fork().transactional((em) => work(createScope(em)), {
-        isolationLevel:
-          options.isolation === 'REPEATABLE_READ'
-            ? IsolationLevel.REPEATABLE_READ
-            : IsolationLevel.READ_COMMITTED,
-        ...(options.readOnly ? { readOnly: true } : {}),
-      });
+      return await this.orm.em.fork().transactional(
+        async (em) => {
+          // SET LOCAL vale só para esta transação: compatível com pooler (ADR, S-5)
+          await em.execute(
+            `SET LOCAL lock_timeout = ${this.env.DB_LOCK_TIMEOUT_MS};
+             SET LOCAL statement_timeout = ${this.env.DB_STATEMENT_TIMEOUT_MS}`,
+          );
+          return work(createScope(em));
+        },
+        {
+          isolationLevel:
+            options.isolation === 'REPEATABLE_READ'
+              ? IsolationLevel.REPEATABLE_READ
+              : IsolationLevel.READ_COMMITTED,
+          ...(options.readOnly ? { readOnly: true } : {}),
+        },
+      );
     } catch (error) {
       throw translate(error);
     }
@@ -66,9 +97,11 @@ function translate(error: unknown): unknown {
     );
   }
   const code = (error as { code?: string } | undefined)?.code;
+  if (error instanceof LockWaitTimeoutException || code === '55P03') {
+    return new LockTimeoutError('tempo de espera pelo lock da wallet esgotado', { cause: '55P03' });
+  }
   const isTransient =
     error instanceof ConnectionException ||
-    error instanceof LockWaitTimeoutException ||
     (typeof code === 'string' && (TRANSIENT_CODES.has(code) || code.startsWith('08'))) ||
     (error instanceof Error && error.name === 'KnexTimeoutError');
   if (isTransient) {
@@ -85,26 +118,47 @@ function createScope(em: EntityManager): TransactionScope {
     ledger: new MikroOrmLedgerRepository(em),
     transactions: new MikroOrmWagerTransactionRepository(em),
     outbox: new MikroOrmOutboxRepository(em),
+    audit: new MikroOrmAuditRepository(em),
   };
 }
 
 class MikroOrmWalletRepository implements WalletRepository {
+  /** Registros gerenciados pelo Unit of Work, para que `save` vire um UPDATE no flush. */
+  private readonly managed = new Map<string, WalletRecord>();
+
   constructor(private readonly em: EntityManager) {}
 
   async findById(id: string) {
-    const record = await this.em.findOne(WalletRecord, { id });
-    return record ? WalletMapper.toDomain(record) : undefined;
+    return this.toDomain(await this.em.findOne(WalletRecord, { id }));
   }
 
-  add(wallet: Parameters<WalletRepository['add']>[0]): void {
+  async lockById(id: string) {
+    return this.toDomain(
+      await this.em.findOne(WalletRecord, { id }, { lockMode: LockMode.PESSIMISTIC_WRITE }),
+    );
+  }
+
+  add(wallet: Wallet): void {
     this.em.persist(WalletMapper.assign(wallet));
+  }
+
+  save(wallet: Wallet): void {
+    const record = this.managed.get(wallet.id);
+    if (!record) throw new Error(`wallet ${wallet.id} não foi carregada nesta transação`);
+    WalletMapper.assign(wallet, record);
+  }
+
+  private toDomain(record: WalletRecord | null) {
+    if (!record) return undefined;
+    this.managed.set(record.id, record);
+    return WalletMapper.toDomain(record);
   }
 }
 
 class MikroOrmLedgerRepository implements LedgerRepository {
   constructor(private readonly em: EntityManager) {}
 
-  append(entry: Parameters<LedgerRepository['append']>[0]): void {
+  append(entry: WalletLedgerEntry): void {
     this.em.persist(this.em.create(LedgerEntryRecord, LedgerEntryMapper.toRecord(entry)));
   }
 
@@ -137,20 +191,86 @@ class MikroOrmLedgerRepository implements LedgerRepository {
 }
 
 class MikroOrmWagerTransactionRepository implements WagerTransactionRepository {
+  private readonly managed = new Map<string, WagerTransactionRecord>();
+
   constructor(private readonly em: EntityManager) {}
 
-  add(transaction: Parameters<WagerTransactionRepository['add']>[0]): void {
-    this.em.persist(
-      this.em.create(WagerTransactionRecord, WagerTransactionMapper.toRecord(transaction)),
+  add(transaction: WagerTransaction): void {
+    const record = this.em.create(
+      WagerTransactionRecord,
+      WagerTransactionMapper.toRecord(transaction),
     );
+    this.managed.set(record.id, record);
+    this.em.persist(record);
+  }
+
+  save(transaction: WagerTransaction): void {
+    const record = this.managed.get(transaction.id);
+    if (!record) throw new Error(`transação ${transaction.id} não foi carregada nesta transação`);
+    WagerTransactionMapper.assign(transaction, record);
+  }
+
+  async findById(id: string) {
+    return this.toDomain(await this.em.findOne(WagerTransactionRecord, { id }));
+  }
+
+  async findByIdempotencyKey(idempotencyKey: string) {
+    return this.toDomain(await this.em.findOne(WagerTransactionRecord, { idempotencyKey }));
+  }
+
+  async findByProviderExternal(
+    providerId: string,
+    externalTransactionId: string,
+    options: { lock?: boolean } = {},
+  ) {
+    return this.toDomain(
+      await this.em.findOne(
+        WagerTransactionRecord,
+        { providerId, externalTransactionId },
+        options.lock ? { lockMode: LockMode.PESSIMISTIC_WRITE } : {},
+      ),
+    );
+  }
+
+  async findProcessedReversalOf(referenceTransactionId: string) {
+    return this.toDomain(
+      await this.em.findOne(WagerTransactionRecord, {
+        referenceTransactionId,
+        kind: { $in: ['REFUND', 'ROLLBACK'] },
+        status: 'PROCESSED',
+      }),
+    );
+  }
+
+  private toDomain(record: WagerTransactionRecord | null) {
+    if (!record) return undefined;
+    this.managed.set(record.id, record);
+    return WagerTransactionMapper.toDomain(record);
   }
 }
 
 class MikroOrmOutboxRepository implements OutboxRepository {
   constructor(private readonly em: EntityManager) {}
 
-  add(message: Parameters<OutboxRepository['add']>[0]): void {
+  add(message: OutboxMessage): void {
     this.em.persist(OutboxMapper.toRecord(message));
+  }
+}
+
+class MikroOrmAuditRepository implements AuditRepository {
+  constructor(private readonly em: EntityManager) {}
+
+  record(entry: AuditEntry): void {
+    this.em.persist(AuditMapper.toRecord(entry));
+  }
+
+  async timeline(transactionId: string): Promise<AuditEntry[]> {
+    const records = await this.em.find(
+      AuditRecord,
+      { transactionId },
+      { orderBy: { occurredAt: 'asc', id: 'asc' } },
+    );
+    return records.map(AuditMapper.toEntry);
   }
 }
 

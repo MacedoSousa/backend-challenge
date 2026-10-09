@@ -12,6 +12,7 @@ export enum FailureCode {
   WalletAlreadyExists = 'WALLET_ALREADY_EXISTS',
 
   WalletNotFound = 'WALLET_NOT_FOUND',
+  TransactionNotFound = 'TRANSACTION_NOT_FOUND',
   WalletPlayerMismatch = 'WALLET_PLAYER_MISMATCH',
   CurrencyMismatch = 'CURRENCY_MISMATCH',
   InsufficientFunds = 'INSUFFICIENT_FUNDS',

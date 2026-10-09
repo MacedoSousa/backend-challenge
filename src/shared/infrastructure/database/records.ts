@@ -150,9 +150,50 @@ export const OutboxSchema = new EntitySchema<OutboxRecord>({
   },
 });
 
+export class AuditRecord {
+  id!: string;
+  transactionId!: string;
+  walletId!: string;
+  action!: string;
+  fromStatus?: string | null;
+  toStatus?: string | null;
+  failureCode?: string | null;
+  ledgerEntryId?: string | null;
+  relatedTransactionId?: string | null;
+  source!: string;
+  correlationId!: string;
+  messageId?: string | null;
+  instanceId!: string;
+  details!: Record<string, unknown>;
+  occurredAt!: Date;
+}
+
+export const AuditSchema = new EntitySchema<AuditRecord>({
+  class: AuditRecord,
+  tableName: 'wager_transaction_audit',
+  properties: {
+    id: { type: 'uuid', primary: true },
+    transactionId: { type: 'uuid' },
+    walletId: { type: 'uuid' },
+    action: { type: 'string' },
+    fromStatus: { type: 'string', nullable: true },
+    toStatus: { type: 'string', nullable: true },
+    failureCode: { type: 'string', nullable: true },
+    ledgerEntryId: { type: 'uuid', nullable: true },
+    relatedTransactionId: { type: 'uuid', nullable: true },
+    source: { type: 'string' },
+    correlationId: { type: 'string' },
+    messageId: { type: 'string', nullable: true },
+    instanceId: { type: 'string' },
+    details: { type: 'json' },
+    occurredAt: { type: 'datetime' },
+  },
+});
+
 export const ENTITY_SCHEMAS = [
   WalletSchema,
   WagerTransactionSchema,
   LedgerEntrySchema,
   OutboxSchema,
+  AuditSchema,
 ];

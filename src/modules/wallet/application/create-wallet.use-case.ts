@@ -4,6 +4,7 @@ import {
   type Clock,
   ID_GENERATOR,
   type IdGenerator,
+  INSTANCE_ID,
   type RequestMeta,
   UNIQUE_WALLET_CONSTRAINT,
   UNIT_OF_WORK,
@@ -15,7 +16,7 @@ import { WagerTransactionProcessed } from '../../messaging/domain/events/wager-t
 import { WalletBalanceChanged } from '../../messaging/domain/events/wallet-balance-changed';
 import { OutboxMessage } from '../../messaging/domain/outbox-message';
 import { openingPayloadHash } from '../../wagering/domain/payload-hash';
-import { WagerTransaction } from '../../wagering/domain/wager-transaction';
+import { WagerTransaction, WagerTransactionStatus } from '../../wagering/domain/wager-transaction';
 import { Wallet } from '../domain/wallet';
 import { WalletAlreadyExistsError } from './errors';
 import { toWalletView, type WalletView } from './wallet-views';
@@ -36,6 +37,7 @@ export class CreateWalletUseCase {
     @Inject(UNIT_OF_WORK) private readonly uow: UnitOfWork,
     @Inject(CLOCK) private readonly clock: Clock,
     @Inject(ID_GENERATOR) private readonly ids: IdGenerator,
+    @Inject(INSTANCE_ID) private readonly instanceId: string,
   ) {}
 
   async execute(command: CreateWalletCommand, meta: RequestMeta): Promise<WalletView> {
@@ -65,6 +67,19 @@ export class CreateWalletUseCase {
         opening.markProcessed({ at: now, balanceAfter: wallet.balance });
         scope.transactions.add(opening);
         scope.ledger.append(openingEntry);
+        scope.audit.record({
+          id: this.ids.next(),
+          transactionId: opening.id,
+          walletId: wallet.id,
+          action: 'PROCESSED',
+          fromStatus: WagerTransactionStatus.Pending,
+          toStatus: opening.status,
+          ledgerEntryId: openingEntry.id,
+          source: 'INTERNAL',
+          correlationId: meta.correlationId,
+          instanceId: this.instanceId,
+          occurredAt: now,
+        });
 
         const context = { ...meta, occurredAt: now };
         scope.outbox.add(

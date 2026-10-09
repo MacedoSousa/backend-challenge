@@ -4,6 +4,7 @@ import { ConfigModule } from './config/config.module';
 import type { Env } from './config/env';
 import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
+import { WageringModule } from './modules/wagering/wagering.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 import { DatabaseModule } from './shared/infrastructure/database/database.module';
 import {
@@ -28,6 +29,7 @@ export class AppModule implements NestModule {
         AuthModule,
         HealthModule,
         WalletModule,
+        WageringModule,
       ],
       providers: [{ provide: APP_FILTER, useClass: ProblemDetailsFilter }],
     };

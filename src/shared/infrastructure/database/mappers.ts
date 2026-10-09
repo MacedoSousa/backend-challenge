@@ -1,12 +1,19 @@
 import type { OutboxMessage } from '../../../modules/messaging/domain/outbox-message';
-import type { WagerTransaction } from '../../../modules/wagering/domain/wager-transaction';
+import {
+  WagerTransaction,
+  type WagerTransactionKind,
+  type WagerTransactionStatus,
+} from '../../../modules/wagering/domain/wager-transaction';
 import { Wallet } from '../../../modules/wallet/domain/wallet';
 import {
   type LedgerDirection,
   WalletLedgerEntry,
 } from '../../../modules/wallet/domain/wallet-ledger-entry';
+import type { AuditEntry } from '../../application/ports';
+import type { FailureCode } from '../../domain/failure-code';
 import { Money } from '../../domain/money';
 import {
+  AuditRecord,
   type LedgerEntryRecord,
   OutboxRecord,
   type WagerTransactionRecord,
@@ -73,6 +80,39 @@ export const LedgerEntryMapper = {
 };
 
 export const WagerTransactionMapper = {
+  toDomain(record: WagerTransactionRecord): WagerTransaction {
+    const optionalMoney = (amount: string | null | undefined) =>
+      amount === null || amount === undefined ? undefined : money(amount, record.currency);
+    return WagerTransaction.rehydrate({
+      id: record.id,
+      providerId: record.providerId,
+      externalTransactionId: record.externalTransactionId,
+      idempotencyKey: record.idempotencyKey,
+      payloadHash: record.payloadHash,
+      walletId: record.walletId,
+      playerId: record.playerId,
+      roundId: record.roundId ?? undefined,
+      gameId: record.gameId ?? undefined,
+      kind: record.kind as WagerTransactionKind,
+      money: money(record.amount, record.currency),
+      referenceExternalTransactionId: record.referenceExternalTransactionId ?? undefined,
+      createdAt: record.createdAt,
+      status: record.status as WagerTransactionStatus,
+      referenceTransactionId: record.referenceTransactionId ?? undefined,
+      relatedTransactionId: record.relatedTransactionId ?? undefined,
+      failureCode: (record.failureCode ?? undefined) as FailureCode | undefined,
+      processedAt: record.processedAt ?? undefined,
+      balanceAfter: optionalMoney(record.balanceAfter),
+      attempts: record.attempts,
+      nextAttemptAt: record.nextAttemptAt ?? undefined,
+    });
+  },
+
+  /** Copia o estado do domínio para um registro já gerenciado pelo Unit of Work. */
+  assign(transaction: WagerTransaction, record: WagerTransactionRecord): WagerTransactionRecord {
+    return Object.assign(record, WagerTransactionMapper.toRecord(transaction));
+  },
+
   toRecord(transaction: WagerTransaction): WagerTransactionRecord {
     const state = transaction.toState();
     return {
@@ -114,5 +154,47 @@ export const OutboxMapper = {
     record.nextAttemptAt = message.nextAttemptAt ?? message.occurredAt;
     record.publishedAt = message.publishedAt ?? null;
     return record;
+  },
+};
+
+export const AuditMapper = {
+  toRecord(entry: AuditEntry): AuditRecord {
+    return Object.assign(new AuditRecord(), {
+      id: entry.id,
+      transactionId: entry.transactionId,
+      walletId: entry.walletId,
+      action: entry.action,
+      fromStatus: entry.fromStatus ?? null,
+      toStatus: entry.toStatus ?? null,
+      failureCode: entry.failureCode ?? null,
+      ledgerEntryId: entry.ledgerEntryId ?? null,
+      relatedTransactionId: entry.relatedTransactionId ?? null,
+      source: entry.source,
+      correlationId: entry.correlationId,
+      messageId: entry.messageId ?? null,
+      instanceId: entry.instanceId,
+      details: entry.details ?? {},
+      occurredAt: entry.occurredAt,
+    });
+  },
+
+  toEntry(record: AuditRecord): AuditEntry {
+    return {
+      id: record.id,
+      transactionId: record.transactionId,
+      walletId: record.walletId,
+      action: record.action as AuditEntry['action'],
+      fromStatus: (record.fromStatus ?? undefined) as AuditEntry['fromStatus'],
+      toStatus: (record.toStatus ?? undefined) as AuditEntry['toStatus'],
+      failureCode: (record.failureCode ?? undefined) as AuditEntry['failureCode'],
+      ledgerEntryId: record.ledgerEntryId ?? undefined,
+      relatedTransactionId: record.relatedTransactionId ?? undefined,
+      source: record.source as AuditEntry['source'],
+      correlationId: record.correlationId,
+      messageId: record.messageId ?? undefined,
+      instanceId: record.instanceId,
+      details: record.details,
+      occurredAt: record.occurredAt,
+    };
   },
 };

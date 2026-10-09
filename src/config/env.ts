@@ -41,6 +41,13 @@ const envSchema = z.object({
   SQS_WAGER_DLQ: z.string().min(1).default('wager-transactions-dlq.fifo'),
   SQS_EVENTS_QUEUE: z.string().min(1).default('wagering-events.fifo'),
   SQS_MAX_RECEIVE_COUNT: z.coerce.number().int().min(1).max(1000).default(5),
+
+  /** Timeouts aplicados com SET LOCAL em cada transação (falha rápida → 503 / retry). */
+  DB_LOCK_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(5_000),
+  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().min(100).max(120_000).default(10_000),
+
+  /** Pontos de falha injetada (só respeitados com NODE_ENV=test). Ex.: "wager.before-commit". */
+  FAULT_POINTS: z.string().default(''),
 });
 
 export type Env = z.infer<typeof envSchema>;

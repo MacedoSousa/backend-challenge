@@ -12,3 +12,6 @@ export class InfrastructureUnavailableError extends DomainError {
   readonly code = FailureCode.InfraUnavailable;
   readonly category = 'transient';
 }
+
+/** Espera pelo lock da wallet esgotada (`lock_timeout`): sinal de hot wallet. */
+export class LockTimeoutError extends InfrastructureUnavailableError {}

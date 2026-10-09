@@ -33,6 +33,8 @@ flowchart LR
 - Concorrência usa **barreira de largada** (todas as requisições disparam juntas) e asserts **apenas sobre o estado final**.
 - Cada teste de integração usa um banco limpo (`TRUNCATE` via role administrativa, ou schema por teste).
 - Testes de concorrência rodam 20× em loop no CI para expor flakiness.
+- **Armadilha do Bun 1.4.2:** `toMatchObject` com `expect.any(...)` substitui o valor no objeto testado. Guarde o valor (ex.: `transactionId`) **antes** dessa asserção, ou use `toEqual`.
+- Sempre conferir o **código de saída** do `bun test`; erro ao montar uma tabela de casos não aparece como falha no resumo.
 - Invariante pós-teste (helper `assertLedgerConsistency(walletId)`), em **todos** os testes que tocam saldo:
   ```
   wallet.balance == Σ CREDIT − Σ DEBIT
