@@ -219,6 +219,34 @@ describe('reversões — fluxo único de REFUND e ROLLBACK', () => {
     await assertLedgerConsistency(sql, wallet.walletId);
   });
 
+  it('WIN sobre BET já reembolsada → 422 REFERENCE_ALREADY_REVERSED, sem crédito do prêmio', async () => {
+    const wallet = await newWallet('100.00');
+    await post(wager(wallet, { externalTransactionId: 'bet-w1', money: brl('40.00') }));
+    const refund = await post(
+      wager(wallet, {
+        kind: 'REFUND',
+        referenceExternalTransactionId: 'bet-w1',
+        money: brl('40.00'),
+      }),
+    );
+    expect(refund.status).toBe(201);
+
+    const win = await post(
+      wager(wallet, {
+        kind: 'WIN',
+        referenceExternalTransactionId: 'bet-w1',
+        money: brl('500.00'),
+      }),
+    );
+    expect(win.status).toBe(422);
+    expect(win.body).toMatchObject({
+      failureCode: 'REFERENCE_ALREADY_REVERSED',
+      relatedTransactionId: refund.body.transactionId,
+    });
+    expect((await balanceOf(wallet)).balance).toBe('100.00');
+    await assertLedgerConsistency(sql, wallet.walletId);
+  });
+
   it('ROLLBACK de WIN sem saldo → REVERSAL_INSUFFICIENT_FUNDS (código distinto)', async () => {
     const wallet = await newWallet('0.00');
     await post(wager(wallet, { kind: 'WIN', externalTransactionId: 'win-1', money: brl('50.00') }));
@@ -234,6 +262,7 @@ describe('reversões — fluxo único de REFUND e ROLLBACK', () => {
     expect(res.status).toBe(422);
     expect(res.body.failureCode).toBe('REVERSAL_INSUFFICIENT_FUNDS');
     expect((await balanceOf(wallet)).balance).toBe('5.00');
+    await assertLedgerConsistency(sql, wallet.walletId);
   });
 
   it.each([

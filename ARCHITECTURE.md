@@ -39,8 +39,8 @@ Diagramas: [docs/05-diagramas.md](./docs/05-diagramas.md).
 | ADR-17 | Validação com **zod**, o mesmo schema para HTTP e SQS | `class-validator` | sai do idioma mais comum do Nest |
 | ADR-18 | IDs UUID v7 | UUID v4, ULID | — |
 | ADR-19 | **Trilha de auditoria** `wager_transaction_audit`, append-only, 1 linha por decisão (inclusive replay e conflito), na mesma transação SQL; ligada ao lançamento (`ledger_entry_id`) e à transação relacionada | só logs estruturados; event sourcing completo | mais escrita por requisição (replays passam a fazer commit), em troca de responder por SQL "para onde foi o dinheiro e o que aconteceu" |
-| ADR-20 | **[Planejado — diferencial da I8, não implementado]** Observabilidade **100% gratuita e local**: OpenTelemetry + pino → `grafana/otel-lgtm` (Grafana, Prometheus, Loki, Tempo), `postgres-exporter`, Grafana com fonte PostgreSQL para dados exatos, Grafana Alerting → e-mail (Mailpit por padrão; SMTP real opcional via `.env`) | Datadog (pago após trial); dashboard próprio; Prometheus + Alertmanager avulsos | o repositório é público: roda sem conta nem chave e não versiona segredos |
-| ADR-21 | **[Planejado — diferencial da I8, não implementado]** **Relatório de incidente por e-mail**: o Grafana detecta e chama um webhook; o módulo `alerting` (papel `notifier`, banco read-only) enriquece com último cliente afetado (mascarado), impacto, atraso, gargalo (heurísticas determinísticas), filas e desfecho, e envia por SMTP (Mailpit local). Idempotente por `(fingerprint, startsAt)` na tabela `incidents`. Níveis crítico/médio/leve com políticas de reenvio; os leves vão num resumo horário | só template nativo do Grafana; notificador próprio que também detecta | mais um componente, isolado do caminho financeiro; fallback nativo do Grafana se ele cair |
+| ADR-20 | **[Implementado na I8, sem OpenTelemetry]** Observabilidade **100% gratuita e local** no perfil `observability` do Compose: Prometheus (coleta cada réplica via `dns_sd`), `postgres-exporter`, Grafana com fonte PostgreSQL somente leitura (`grafana_ro`, 5 tabelas) para dados exatos, 2 dashboards e 14 alertas provisionados, Grafana Alerting → e-mail (Mailpit por padrão; SMTP real opcional via `compose.email.yaml` + `.env`). Traces (OpenTelemetry/Tempo) e Loki ficaram fora | Datadog (pago após trial); dashboard próprio; Prometheus + Alertmanager avulsos | o repositório é público: roda sem conta nem chave e não versiona segredos |
+| ADR-21 | **[Não implementado — substituído pelo template nativo do Grafana]** **Relatório de incidente por e-mail**: o Grafana detecta e chama um webhook; o módulo `alerting` (papel `notifier`, banco read-only) enriquece com último cliente afetado (mascarado), impacto, atraso, gargalo (heurísticas determinísticas), filas e desfecho, e envia por SMTP (Mailpit local). Idempotente por `(fingerprint, startsAt)` na tabela `incidents`. Níveis crítico/médio/leve com políticas de reenvio (todo alerta avisa na primeira vez; o nível só muda o reenvio) | só template nativo do Grafana; notificador próprio que também detecta | mais um componente, isolado do caminho financeiro; fallback nativo do Grafana se ele cair |
 | ADR-22 | **Versões fixadas em majors maduras**: NestJS 11.2, MikroORM 6.6, TypeScript 5.9 (só typecheck; o Bun transpila), Testcontainers 11, zod 4, Bun 1.4.2. Dependências com versão exata | NestJS 12 (lançado há 6 semanas), MikroORM 7, TypeScript 7 (compilador nativo) | upgrade de major planejado depois da entrega, com a suíte de testes como rede |
 | ADR-23 | **Balanceador nginx** na frente das réplicas no Compose, com `resolve` dinâmico, `proxy_connect_timeout 1s` e nova tentativa em outra réplica (só GET; POST nunca é repetido pelo proxy) | Traefik; acessar réplicas por portas diferentes | uma peça a mais; em produção seria o load balancer da plataforma |
 | ADR-24 | **Sessão única por jogador fora do núcleo**: a proteção financeira contra jogar o mesmo saldo em dois jogos é o lock da wallet + `CHECK (balance >= 0)`. Fica uma porta `PlayerSessionPolicy` (no-op) chamada antes de cada `BET`, com `failureCode` reservado `CONCURRENT_GAME_NOT_ALLOWED`, e um alerta antifraude de jogos simultâneos | bloquear `BET` em outro jogo até a rodada anterior terminar | sem sinal confiável de fim de rodada; um `LOSS` perdido travaria o jogador |
@@ -68,7 +68,7 @@ O enunciado permite adaptar nomes e assinaturas "desde que as garantias sejam pr
 | `WagerTransaction.reject` | `(code)` | `(code, { at, balanceAfter, referenceTransactionId?, relatedTransactionId? })` | replay de rejeição + aponta a reversão vencedora (D-01) | só aceita códigos de negócio |
 | `WagerTransaction.markPendingReference` | `()` | `(nextAttemptAt)` + `scheduleReferenceRetry(nextAttemptAt)` + `attempts` | o worker do §7.1 precisa de backoff persistido | transições explícitas |
 | `WagerTransaction` | — | + `createOpening(...)` | `OPENING` só nasce por esta factory interna; `create()` o recusa | `OPENING` nunca vem da API/fila |
-| Eventos | `aggregateId` livre | `aggregateId = walletId` em todos | ordem por wallet na fila FIFO (D-08) | envelope e `data` em `MoneyProps` |
+| Eventos | `aggregateId` livre | `aggregateId = walletId` em todos | ordem por wallet *best effort* na fila FIFO; a garantia é `walletVersion` (D-08) | envelope e `data` em `MoneyProps` |
 
 ## Garantias e onde vivem
 
@@ -98,7 +98,7 @@ Implementado (§12): erros HTTP em RFC 9457 (`application/problem+json`) com `fa
 
 - **Health:** `/health/live` (processo) e `/health/ready` (Postgres `SELECT 1` + SQS `GetQueueAttributes`), abertos.
 
-Planejado como diferencial (I8, [docs/06](./docs/06-observabilidade.md)): OpenTelemetry, Grafana, alertas e relatório de incidente por e-mail.
+Implementado na I8 ([docs/06 §0](./docs/06-observabilidade.md)): `docker compose --profile observability up -d` sobe Prometheus, Grafana (dashboards **Operação** e **Auditoria**, 14 alertas por severidade) e Mailpit, que recebe os e-mails de alerta. Validado ponta a ponta pelo navegador (`bun run test:e2e`, `bun run test:evidence`). Ficaram fora: OpenTelemetry/traces e o relatório de incidente enriquecido (ADR-21).
 
 ## Escalabilidade
 
@@ -131,12 +131,12 @@ Planejado como diferencial (I8, [docs/06](./docs/06-observabilidade.md)): OpenTe
 
 | # | Medida | Situação |
 |---|---|---|
-| S-1 | Outbox com `SendMessageBatch` (até 10) e consumo com `MaxNumberOfMessages=10` | ✅ implementado |
-| S-2 | Job de retenção de inbox processada e outbox publicada (> 7 dias) | 🟡 adiado para a I8 (diferencial); as tabelas crescem até lá |
+| S-1 | Outbox com `SendMessageBatch` (até 10) e consumo com `MaxNumberOfMessages=10` | ✅ implementado; na I8, lotes em paralelo por faixa de wallet e índice do claim (atraso máx. na rampa 74 → 45 s; escoamento ~1.600 → ~3.200 eventos/s) |
+| S-2 | Job de retenção de inbox processada e outbox publicada | ✅ I8: `RetentionWorker` (papel `scheduler`), lotes com `SKIP LOCKED`, outbox 7 dias, inbox ≥ 15 dias (acima da retenção de 14 dias do SQS); IT-26 |
 | S-3 | Conexão de leitura separada (`DATABASE_READ_URL`) | 🟡 adiado para a I8; a variável já é aceita, mas toda leitura usa o primário |
 | S-4 | Pool por instância configurável (`DB_POOL_MAX`), conta de conexões no README | ✅ implementado |
 | S-5 | Timeouts com `SET LOCAL` (compatível com pooler) | ✅ implementado |
-| S-6 | Teste de escala 1 × 3 instâncias | 🟡 adiado para a I8 (com o teste de carga); a correção com 3 instâncias está provada em CT-04/CT-08 |
+| S-6 | Teste de escala 1 × 3 instâncias | ✅ I8: 380 → 711 req/s (1,9× numa VM compartilhada), p99 435 → 320 ms, 0 erros — [relatório de carga](./docs/load-test-report.md) |
 
 ### Caminho de evolução (documentado, não implementado)
 
@@ -169,9 +169,10 @@ Cada passo é disparado por um **sinal medido** nos dashboards, nunca por anteci
 **Operacionais**
 - Métricas são por instância: o Prometheus precisa coletar cada réplica, não o balanceador (ADR-28).
 - No `SIGTERM`, o NestJS encerra graciosamente e **re-emite o sinal**: o processo termina "por sinal", não com código 0 (o orquestrador deve tratar isso como encerramento normal).
-- Reconciliação é sob demanda (não há job periódico); retenção de inbox/outbox ainda não implementada (S-2).
-- Sem limitação de taxa por provedor/jogador e sem dashboards/alertas prontos (diferenciais da I8).
+- Reconciliação é sob demanda (não há job periódico); os alertas de antifraude/auditoria consultam o banco a cada minuto.
+- Sem limitação de taxa por provedor/jogador.
+- Sem traces distribuídos (OpenTelemetry): a correlação é por `correlationId` nos logs e na auditoria.
 
 **Do ambiente**
 - Bun 1.4.2: `toMatchObject` com `expect.any()` altera o objeto testado (contornado nos testes, docs/04).
-- O SDK OpenTelemetry e o `dd-trace` têm suporte parcial no Bun — por isso a observabilidade avançada ficou para a I8, com spike prévio.
+- O SDK OpenTelemetry e o `dd-trace` têm suporte parcial no Bun — por isso a observabilidade usa Prometheus (`prom-client`) e não traces.

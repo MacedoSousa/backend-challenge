@@ -66,5 +66,80 @@ services:
     depends_on:
       app: { condition: service_healthy }
 
+  # ---------------------------------------------------------------------------------------
+  # Perfil opcional de observabilidade (diferencial, docs/06):
+  #   docker compose --profile observability up -d
+  #   Grafana http://localhost:3001 (admin/admin, sem acesso anônimo) · Prometheus :9090 · Mailpit :8025
+  # ---------------------------------------------------------------------------------------
+  obs-setup:
+    profiles: [observability]
+    image: postgres:17-alpine
+    environment:
+      PGPASSWORD: wagering
+    # usuário SOMENTE LEITURA, só nas tabelas que os painéis e alertas usam (mínimo privilégio)
+    command:
+      - sh
+      - -c
+      - >-
+        psql -h postgres -U wagering -d wagering -v ON_ERROR_STOP=1 -c "
+        DO \$\$ BEGIN
+          IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'grafana_ro') THEN
+            CREATE ROLE grafana_ro LOGIN PASSWORD 'grafana_ro';
+          END IF;
+        END \$\$;
+        GRANT CONNECT ON DATABASE wagering TO grafana_ro;
+        GRANT USAGE ON SCHEMA public TO grafana_ro;
+        GRANT SELECT ON wallets, wallet_ledger_entries, wager_transactions,
+          wager_transaction_audit, outbox_messages TO grafana_ro;"
+    depends_on:
+      setup: { condition: service_completed_successfully }
+    restart: "no"
+
+  postgres-exporter:
+    profiles: [observability]
+    image: prometheuscommunity/postgres-exporter:v0.20.1
+    environment:
+      DATA_SOURCE_NAME: postgresql://wagering:wagering@postgres:5432/wagering?sslmode=disable
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.14.0
+    ports: ["9090:9090"]
+    volumes: ["./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    depends_on:
+      app: { condition: service_healthy }
+
+  mailpit:
+    profiles: [observability]
+    image: axllent/mailpit:v1.31.1
+    ports: ["8025:8025"]
+
+  grafana:
+    profiles: [observability]
+    image: grafana/grafana-oss:12.4.3
+    ports: ["3001:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin      # somente ambiente local
+      # sem acesso anônimo: Viewers podem consultar as fontes de dados pela API do Grafana
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SMTP_ENABLED: "true"
+      GF_SMTP_HOST: mailpit:1025
+      GF_SMTP_FROM_ADDRESS: alerts@wagering.local
+      GF_SMTP_FROM_NAME: Wagering Alerts
+      GF_SMTP_STARTTLS_POLICY: NoStartTLS
+      GF_SMTP_SKIP_VERIFY: "true"
+      # destinatário dos alertas (compose.email.yaml troca pelo endereço real do .env)
+      ALERT_EMAIL_TO: ops@wagering.local
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus: { condition: service_started }
+      mailpit: { condition: service_started }
+      obs-setup: { condition: service_completed_successfully }
+
 volumes:
   pgdata:

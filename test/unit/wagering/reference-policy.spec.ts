@@ -121,6 +121,24 @@ describe('ReferencePolicy — fluxo único de reversão', () => {
     );
   });
 
+  describe('UT-T18 liquidação de BET já revertida (revisão técnica, divergência 6)', () => {
+    it.each([Kind.Win, Kind.Loss] as const)(
+      '%s sobre BET já reembolsada/revertida → REFERENCE_ALREADY_REVERSED (sem crédito duplo)',
+      (kind) => {
+        const bet = processed({ kind: Kind.Bet });
+        const refund = processed({ kind: Kind.Refund, referenceExternalTransactionId: 'bet-1' });
+        const settle = makeTransaction({ kind, referenceExternalTransactionId: 'bet-1' });
+        expect(
+          policy.evaluate({ transaction: settle, reference: bet, existingReversal: refund }),
+        ).toEqual({
+          type: 'REJECT',
+          code: FailureCode.ReferenceAlreadyReversed,
+          relatedTransactionId: refund.id,
+        });
+      },
+    );
+  });
+
   describe('UT-T14/T15 estado da referência', () => {
     it('referência REJECTED → REFERENCE_NOT_PROCESSED', () => {
       const bet = makeTransaction({ kind: Kind.Bet });

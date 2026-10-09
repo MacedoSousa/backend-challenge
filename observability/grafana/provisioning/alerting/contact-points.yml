@@ -1,0 +1,36 @@
+apiVersion: 1
+contactPoints:
+  - orgId: 1
+    name: email-ops
+    receivers:
+      - uid: email-ops
+        type: email
+        settings:
+          addresses: $ALERT_EMAIL_TO
+          singleEmail: true
+
+# Política por severidade (docs/06 §7): TODO alerta novo avisa na primeira vez em ~10–60 s;
+# a severidade controla só o reenvio enquanto continua ativo (crítico 30 min, médio 2 h,
+# leve 1 h). Um "resumo horário" de leves atrasava em até 1 h um alerta leve NOVO, porque
+# ele entrava num grupo já aberto (achado pela suíte de evidências, A07).
+policies:
+  - orgId: 1
+    receiver: email-ops
+    group_by: [alertname, severity]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+    routes:
+      - receiver: email-ops
+        object_matchers: [[severity, '=', critical]]
+        group_wait: 10s
+        repeat_interval: 30m
+      - receiver: email-ops
+        object_matchers: [[severity, '=', medium]]
+        group_wait: 30s
+        repeat_interval: 2h
+      - receiver: email-ops
+        object_matchers: [[severity, '=', light]]
+        group_wait: 1m
+        group_interval: 5m
+        repeat_interval: 1h

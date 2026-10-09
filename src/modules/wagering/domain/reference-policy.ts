@@ -25,7 +25,7 @@ export interface ReferenceEvaluation {
   transaction: WagerTransaction;
   /** Resolvida por (providerId, referenceExternalTransactionId); ausente = ainda não chegou. */
   reference?: WagerTransaction | undefined;
-  /** Reversão PROCESSED já existente sobre a mesma referência (qualquer tipo). */
+  /** Reversão PROCESSED já existente sobre a referência (qualquer tipo), para qualquer operação. */
   existingReversal?: WagerTransaction | undefined;
 }
 
@@ -54,7 +54,9 @@ export class ReferencePolicy {
     if (reference.status !== Status.Processed) {
       return reject(FailureCode.ReferenceNotProcessed);
     }
-    if (transaction.isReversal() && existingReversal) {
+    // vale para toda operação que referencia: reversão única (D-01) e, para WIN/LOSS, uma BET
+    // reembolsada/revertida deixou de existir economicamente — liquidá-la daria crédito duplo
+    if (existingReversal) {
       return {
         type: 'REJECT',
         code: FailureCode.ReferenceAlreadyReversed,

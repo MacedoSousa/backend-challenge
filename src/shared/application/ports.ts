@@ -67,11 +67,14 @@ export interface WagerTransactionRepository {
   save(transaction: WagerTransaction): void;
   findById(id: string): Promise<WagerTransaction | undefined>;
   findByIdempotencyKey(key: string): Promise<WagerTransaction | undefined>;
-  /** `lock` = `FOR UPDATE` (referência de uma reversão, sempre depois do lock da wallet). */
+  /**
+   * Sem `FOR UPDATE`: uma referência válida pertence à wallet já travada, e toda mudança nela
+   * acontece sob esse lock. Travar aqui só teria efeito numa referência de OUTRA wallet —
+   * justamente o caso inválido, onde abriria espaço para deadlock entre wallets.
+   */
   findByProviderExternal(
     providerId: string,
     externalTransactionId: string,
-    options?: { lock?: boolean },
   ): Promise<WagerTransaction | undefined>;
   /** Reversão (REFUND ou ROLLBACK) PROCESSED que já aponta para a referência. */
   findProcessedReversalOf(referenceTransactionId: string): Promise<WagerTransaction | undefined>;
@@ -189,9 +192,12 @@ export interface Metrics {
   retry(component: 'outbox' | 'consumer' | 'pending_worker'): void;
   outboxLag(seconds: number): void;
   dlq(reason: string): void;
+  /** Profundidade de uma fila (inclui a DLQ: vê também o que o redrive do SQS moveu). */
+  queueDepth(queue: string, messages: number): void;
   /** Tempo entre o envio da mensagem (SentTimestamp) e o início do consumo. */
   queueWait(seconds: number): void;
   pendingReferences(count: number): void;
+  retentionDeleted(table: 'outbox_messages' | 'inbox_messages', count: number): void;
 }
 
 export const INSTANCE_ID = Symbol('INSTANCE_ID');
@@ -260,4 +266,11 @@ export const PENDING_REFERENCE_STORE = Symbol('PENDING_REFERENCE_STORE');
 export interface PendingReferenceStore {
   claimDue(input: { now: Date; leaseMs: number; limit: number }): Promise<PendingReferenceClaim[]>;
   count(): Promise<number>;
+}
+
+export const RETENTION_STORE = Symbol('RETENTION_STORE');
+/** Limpeza em lotes pequenos (não segura locks longos nem infla o WAL de uma vez). */
+export interface RetentionStore {
+  deletePublishedOutbox(olderThan: Date, limit: number): Promise<number>;
+  deleteProcessedInbox(olderThan: Date, limit: number): Promise<number>;
 }

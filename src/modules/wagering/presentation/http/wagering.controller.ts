@@ -51,13 +51,19 @@ export class WageringController {
       res.status(success(result.idempotentReplay));
       return result;
     }
-    // REJECTED / FAILED: problem details com o resultado persistido como extensão (RFC 9457)
+    // REJECTED / FAILED: problem details com o resultado persistido como extensão (RFC 9457).
+    // FAILED é falha permanente de infraestrutura, nunca rejeição de negócio: 500, e sem
+    // Retry-After — é terminal, reenviar a mesma chave devolve sempre este mesmo resultado
+    const httpStatus =
+      result.status === 'FAILED'
+        ? HttpStatus.INTERNAL_SERVER_ERROR
+        : HttpStatus.UNPROCESSABLE_ENTITY;
     const { status: transactionStatus, ...rest } = result;
-    res.status(HttpStatus.UNPROCESSABLE_ENTITY).type('application/problem+json');
+    res.status(httpStatus).type('application/problem+json');
     return {
       type: `urn:wagering:problem:${(result.failureCode ?? 'rejected').toLowerCase()}`,
       title: result.failureCode ?? 'REJECTED',
-      status: HttpStatus.UNPROCESSABLE_ENTITY,
+      status: httpStatus,
       correlationId: meta.correlationId,
       transactionStatus,
       ...rest,

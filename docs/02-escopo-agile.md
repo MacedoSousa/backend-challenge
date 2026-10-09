@@ -185,7 +185,7 @@ gantt
 | **I5** ✅ | E5-1..4, E6-1..3 | Fila e fora de ordem | `ROLLBACK` antes da `BET` resolve sozinho; métricas de retries e DLQ |
 | **I6** ✅ | E8-1, E8-2, E7-3 | Todos os testes de concorrência do §13 | ≥ 3 processos, crash após commit/antes do ack, reinício |
 | **I7** ✅ | E9-1..3 | Entregável completo | README + ARCHITECTURE revisados; conformidade 100% |
-| **I8** | E2-5, E4-4, E7-4..9, E8-3, E8-4 | Diferenciais | `test:load`, Grafana, e-mail de incidente, antifraude |
+| **I8** | E2-5, E4-4, E7-4..9, E8-3, E8-4 | Diferenciais | ✅ `test:load` com [relatório](./load-test-report.md); retenção; Grafana (2 dashboards, 14 alertas, 2 de antifraude) e e-mail via Mailpit/SMTP; E2E e 22 cenários em vídeo (Playwright); [revisão técnica](./08-defesa-tecnica.md) com 9 correções. Fora: OpenTelemetry e o relatório de incidente enriquecido (ADR-21) |
 
 > **I7 entregue:** revisão de entrega — README reescrito (roteiro copiável, guia para avaliação, testes e o que provam), ARCHITECTURE com fluxo de ponta a ponta, métricas reais, situação honesta da escalabilidade e limitações completas; documentos de apoio alinhados ao código; validado num clone limpo.
 >

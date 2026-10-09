@@ -4,6 +4,7 @@ import { Counter, collectDefaultMetrics, Gauge, Histogram, Registry } from 'prom
 import { APP_CONFIG } from '../../config/config.module';
 import type { Env } from '../../config/env';
 import { Public } from '../../modules/auth/public.decorator';
+import { InfrastructureUnavailableError } from '../application/errors';
 import {
   APP_LOGGER,
   type AppLogger,
@@ -21,9 +22,35 @@ import {
   type PlayerSessionPolicy,
   type Source,
 } from '../application/ports';
+import { InvariantViolationError } from '../domain/domain-error';
+import { FailureCode } from '../domain/failure-code';
 import { LOGGER } from './logging/logging.module';
 
 export const METRICS_REGISTRY = Symbol('METRICS_REGISTRY');
+
+/**
+ * Combinações de rótulos que alimentam alertas, criadas com 0 no boot: sem isso a série
+ * nasce já com 1 na primeira ocorrência e `increase()` do Prometheus não a enxerga — o
+ * alerta perderia justamente o primeiro evento (bug achado validando o Grafana).
+ */
+const DLQ_REASONS = [
+  'malformed_json',
+  'unknown_type',
+  'invalid_schema',
+  'invalid_payload',
+  'inbox_payload_mismatch',
+  'retries_exhausted',
+  'bug',
+  'permanent',
+] as const;
+const RETRY_COMPONENTS = ['consumer', 'outbox', 'pending_worker'] as const;
+const DUPLICATE_TYPES: readonly DuplicateType[] = [
+  'idempotent_replay',
+  'payload_conflict',
+  'key_mismatch',
+  'inbox_duplicate',
+];
+const SOURCES: readonly Source[] = ['HTTP', 'SQS', 'WORKER', 'INTERNAL'];
 
 /** Espera acima disso conta como conflito de lock (duas operações disputando a wallet). */
 const LOCK_CONTENTION_THRESHOLD_SECONDS = 0.005;
@@ -57,10 +84,15 @@ export class InjectedFaultError extends Error {
 /**
  * Ativo somente com NODE_ENV=test; em qualquer outro ambiente é no-op.
  * `ponto` lança `InjectedFaultError`; `ponto:kill` mata o próprio processo com SIGKILL
- * exatamente ali (sem finally, sem shutdown, sem ack) — o "kill -9" dos testes de crash.
+ * exatamente ali (sem finally, sem shutdown, sem ack) — o "kill -9" dos testes de crash;
+ * `ponto:bug` lança `InvariantViolationError` — simula um erro de programação;
+ * `ponto:transient-once` lança `InfrastructureUnavailableError` só na primeira vez.
  */
+type FaultMode = 'throw' | 'kill' | 'bug' | 'transient-once';
+const FAULT_MODES: readonly string[] = ['kill', 'bug', 'transient-once'];
+
 class EnvFaultInjector implements FaultInjector {
-  private readonly points: ReadonlyMap<string, 'throw' | 'kill'>;
+  private readonly points: Map<string, FaultMode>;
 
   constructor(env: Env) {
     const entries =
@@ -68,11 +100,10 @@ class EnvFaultInjector implements FaultInjector {
         ? env.FAULT_POINTS.split(',')
             .map((point) => point.trim())
             .filter(Boolean)
-            .map((point): [string, 'throw' | 'kill'] =>
-              point.endsWith(':kill')
-                ? [point.slice(0, -':kill'.length), 'kill']
-                : [point, 'throw'],
-            )
+            .map((point): [string, FaultMode] => {
+              const [name = point, mode] = point.split(':');
+              return [name, mode && FAULT_MODES.includes(mode) ? (mode as FaultMode) : 'throw'];
+            })
         : [];
     this.points = new Map(entries);
   }
@@ -80,6 +111,11 @@ class EnvFaultInjector implements FaultInjector {
   trigger(point: string): void {
     const mode = this.points.get(point);
     if (mode === 'kill') process.kill(process.pid, 'SIGKILL');
+    if (mode === 'bug') throw new InvariantViolationError(`bug injetado em ${point}`);
+    if (mode === 'transient-once') {
+      this.points.delete(point);
+      throw new InfrastructureUnavailableError(`falha transitória injetada em ${point}`);
+    }
     if (mode) throw new InjectedFaultError(point);
   }
 }
@@ -100,8 +136,10 @@ export class PrometheusMetrics implements Metrics {
   private readonly retries: Counter<'component'>;
   private readonly lag: Gauge;
   private readonly dlqMessages: Counter<'reason'>;
+  private readonly depth: Gauge<'queue'>;
   private readonly queueWaits: Histogram;
   private readonly pending: Gauge;
+  private readonly retention: Counter<'table'>;
 
   constructor(@Inject(METRICS_REGISTRY) registry: Registry) {
     const registers = [registry];
@@ -179,6 +217,12 @@ export class PrometheusMetrics implements Metrics {
       labelNames: ['reason'],
       registers,
     });
+    this.depth = new Gauge({
+      name: 'wagering_queue_depth',
+      help: 'Mensagens na fila (visíveis + em processamento), lidas do SQS pelo scheduler',
+      labelNames: ['queue'],
+      registers,
+    });
     this.queueWaits = new Histogram({
       name: 'wagering_queue_wait_seconds',
       help: 'Tempo entre o envio da mensagem e o início do consumo',
@@ -190,6 +234,13 @@ export class PrometheusMetrics implements Metrics {
       help: 'Transações aguardando a referência (PENDING_REFERENCE)',
       registers,
     });
+    this.retention = new Counter({
+      name: 'wagering_retention_deleted_total',
+      help: 'Linhas apagadas pela retenção (outbox publicada, inbox processada)',
+      labelNames: ['table'],
+      registers,
+    });
+    this.initializeAlertSeries();
   }
 
   outboxPublished(count: number): void {
@@ -208,12 +259,34 @@ export class PrometheusMetrics implements Metrics {
     this.dlqMessages.inc({ reason });
   }
 
+  queueDepth(queue: string, messages: number): void {
+    this.depth.set({ queue }, messages);
+  }
+
   queueWait(seconds: number): void {
     this.queueWaits.observe(seconds);
   }
 
   pendingReferences(count: number): void {
     this.pending.set(count);
+  }
+
+  retentionDeleted(table: 'outbox_messages' | 'inbox_messages', count: number): void {
+    this.retention.inc({ table }, count);
+  }
+
+  private initializeAlertSeries(): void {
+    for (const reason of DLQ_REASONS) this.dlqMessages.labels({ reason }).inc(0);
+    for (const component of RETRY_COMPONENTS) this.retries.labels({ component }).inc(0);
+    for (const source of SOURCES) {
+      for (const type of DUPLICATE_TYPES) this.duplicates.labels({ source, type }).inc(0);
+    }
+    for (const failureCode of Object.values(FailureCode)) {
+      this.errors.labels({ category: 'business', failure_code: failureCode }).inc(0);
+    }
+    for (const table of ['outbox_messages', 'inbox_messages'] as const) {
+      this.retention.labels({ table }).inc(0);
+    }
   }
 
   reconciliation(result: 'consistent' | 'inconsistent'): void {

@@ -16,3 +16,6 @@ coverage/
 .vscode/*
 !.vscode/extensions.json
 test/load/results/
+test/e2e/artifacts/
+evidence/
+.playwright-mcp/

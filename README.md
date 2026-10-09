@@ -2,7 +2,7 @@
 
 Serviço financeiro distribuído que processa transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) de múltiplos provedores, via **HTTP** e **SQS**, e permanece correto quando mensagens chegam **duplicadas**, **fora de ordem** ou **simultaneamente** — com várias instâncias rodando ao mesmo tempo.
 
-> ✅ Todo o obrigatório do enunciado (§1–§13) implementado e testado: **214 testes de unidade, 97 de integração e 5 multi-processo**, sempre contra PostgreSQL e LocalStack **reais**. Conformidade item a item: [docs/07-conformidade.md](./docs/07-conformidade.md).
+> ✅ Todo o obrigatório do enunciado (§1–§13) implementado e testado: **262 testes de unidade, 108 de integração e 5 multi-processo**, mais E2E no navegador, 22 cenários gravados em vídeo e teste de carga, sempre contra PostgreSQL e LocalStack **reais**. Conformidade item a item: [docs/07-conformidade.md](./docs/07-conformidade.md).
 
 **Stack:** Bun 1.4 · TypeScript 5.9 (strict) · NestJS 11 · MikroORM 6 · PostgreSQL 17 · AWS SQS (LocalStack 4) · Docker Compose · zod · pino · prom-client · Biome
 
@@ -90,24 +90,54 @@ Mensagens inválidas vão para `wager-transactions-dlq.fifo` com o atributo `rea
 | `GET` | `/health/live`, `/health/ready` | liveness; readiness (Postgres + SQS) — sem autenticação |
 | `GET` | `/metrics` | métricas Prometheus **da réplica que respondeu** (colete cada instância) |
 
-**Status de `POST /wagering/transactions`:** `201` processada · `200` replay · `202` aguardando a referência · `400` payload inválido · `404` wallet inexistente · `409` conflito de idempotência · `422` rejeição de negócio · `503` indisponibilidade temporária (com `Retry-After`).
+**Status de `POST /wagering/transactions`:** `201` processada · `200` replay · `202` aguardando a referência · `400` payload inválido · `404` wallet inexistente · `409` conflito de idempotência · `422` rejeição de negócio · `500` replay de uma operação `FAILED` (tentativas de infraestrutura esgotadas pela fila — terminal, sem `Retry-After`) · `503` indisponibilidade temporária (com `Retry-After`).
 
 Valores monetários são **sempre** strings com exatamente 2 casas (`"25.00"`). Todo erro é `application/problem+json` (RFC 9457) com `failureCode` estável e `correlationId` — a taxonomia completa, com a ação recomendada ao provedor, está em [docs/01 §7](./docs/01-analise-requisitos.md#7-taxonomia-de-failurecode).
+
+## Observabilidade e alertas (opcional)
+
+```bash
+docker compose --profile observability up -d --build --wait
+```
+
+| Serviço | Endereço | Acesso |
+|---|---|---|
+| Grafana — dashboards **Operação** e **Auditoria**, 14 alertas | http://localhost:3001 | `admin` / `admin` (sem acesso anônimo) |
+| Mailpit — caixa que recebe os e-mails de alerta | http://localhost:8025 | aberto (só local) |
+| Prometheus | http://localhost:9090 | aberto (só local) |
+
+Todo alerta avisa por e-mail na primeira ocorrência; o nível (crítico, médio, leve) define o reenvio
+enquanto continua ativo. Para receber num e-mail **real**, copie `.env.example` para `.env`, preencha
+`ALERT_EMAIL_TO` e o SMTP (ex.: Gmail com *senha de app*) e suba com o arquivo extra — o Mailpit
+continua guardando uma cópia e repassa tudo:
+
+```bash
+docker compose -f compose.yaml -f compose.email.yaml --profile observability up -d --build --wait
+```
+
+O `.env` não é versionado. Detalhes em [docs/06](./docs/06-observabilidade.md).
 
 ## Testes
 
 ```bash
 bun install
-bun run test:unit           # 214 — domínio puro, sem infraestrutura (~1 s)
-bun run test:integration    # 97 — Postgres e LocalStack reais via Testcontainers (~1,5 min)
+bun run test:unit           # 262 — domínio puro, sem infraestrutura (~1 s)
+bun run test:integration    # 108 — Postgres e LocalStack reais via Testcontainers (~1,5 min)
 bun run test:concurrency    # 5 — processos reais com SIGKILL/SIGTERM (~35 s)
 bun run lint && bun run typecheck
+
+# diferenciais (exigem Docker; os dois de navegador exigem Google Chrome)
+bun run test:e2e            # 6 — Grafana, alertas e e-mail validados pelo navegador (Playwright)
+bun run test:evidence       # 22 cenários gravados em vídeo → evidence/<data>/index.html
+bun run test:load           # k6: carga, hot wallet, duplicatas, escala 1×3 → docs/load-test-report.md
 ```
 
 | Suíte | O que prova |
 |---|---|
 | unidade | `Money` exato (rejeita `number`, notação científica, > 2 casas), invariantes da `Wallet`, máquina de estados, regras de BET/WIN/LOSS/REFUND/ROLLBACK, políticas de referência e de retry, eventos; **teste de arquitetura** impede o domínio de importar framework/ORM/SDK ou converter valores para `number` |
 | integração | cada constraint do schema recusando a violação; atomicidade com falha injetada antes do commit; idempotência, replay e conflitos; inbox, redelivery, retry e DLQ; publishers concorrentes; referências fora de ordem; CT-01 (50× a mesma aposta → 1 débito), CT-02 (2× 80.00 sobre 100.00, repetido 10×), CT-10 (REFUND × ROLLBACK simultâneos) |
+| e2e (Playwright) | dashboards renderizam com dados das 3 réplicas; 14 alertas provisionados; a **primeira** mensagem na DLQ dispara alerta e e-mail; Grafana sem acesso anônimo e com usuário de banco de mínimo privilégio |
+| evidências em vídeo | S01–S08 (API e fila: aposta, corrida 2×80.00, replay, conflito, rejeição, fila, DLQ, reconciliação), O01–O03 (dashboards), A01–A11 (cada gatilho de alerta, com o e-mail correspondente localizado no Mailpit). Cada cenário grava o console e a tela; `evidence/latest/index.html` reúne tudo |
 | multi-processo | CT-04 (3 instâncias numa hot wallet → exatamente 100 aprovadas de 200), CT-05 (`SIGKILL` após o commit, antes do ack), CT-06 (`SIGKILL` no publisher), CT-08 (todas as instâncias mortas sob carga e reiniciadas), `SIGTERM` gracioso |
 
 Todo teste que toca saldo termina verificando a invariante do §13: `wallet.balance == saldo reconstruído pelo ledger`, com a cadeia `balance_before → balance_after` contínua e sem buracos de versão.
@@ -121,8 +151,8 @@ Todo teste que toca saldo termina verificando a invariante do §13: `wallet.bala
 | Idempotência | [`process-wager-transaction.use-case.ts`](./src/modules/wagering/application/process-wager-transaction.use-case.ts), [`payload-hash.ts`](./src/modules/wagering/domain/payload-hash.ts), ADR-05/06/30 |
 | Mensageria e falhas | [consumidor](./src/modules/wagering/presentation/sqs/wager-transaction.consumer.ts), [outbox](./src/modules/messaging/application/publish-outbox.use-case.ts), [worker de pendências](./src/modules/wagering/application/resolve-pending-references.use-case.ts), [todas as políticas de retry](./docs/03-padroes-arquitetura.md#91-todas-as-políticas-de-retry-do-sistema) |
 | Modelagem e arquitetura | `src/**/domain` (TS puro), portas em [`ports.ts`](./src/shared/application/ports.ts), [ARCHITECTURE.md](./ARCHITECTURE.md) |
-| Testes | `test/unit`, `test/integration`, `test/concurrency`, [docs/04](./docs/04-estrategia-testes.md) |
-| Observabilidade | `/metrics`, logs JSON com `correlationId`/`messageId`/`transactionId`/`walletId`/`providerId`, health, [docs/06](./docs/06-observabilidade.md) |
+| Testes | `test/unit`, `test/integration`, `test/concurrency`, `test/e2e`, `test/load`, [docs/04](./docs/04-estrategia-testes.md), [relatório de carga](./docs/load-test-report.md) |
+| Observabilidade | `/metrics`, logs JSON com `correlationId`/`messageId`/`transactionId`/`walletId`/`providerId`, health, `docker compose --profile observability up -d` (Grafana em :3001, Mailpit em :8025), [docs/06](./docs/06-observabilidade.md) |
 | Documentação | este README, [ARCHITECTURE.md](./ARCHITECTURE.md), [docs/](./docs) |
 
 ## Estrutura
@@ -158,7 +188,9 @@ Variáveis de ambiente validadas no boot (`src/config/env.ts`; o erro lista todo
 | `AWS_ENDPOINT_URL` | — | LocalStack (`http://localhost:4566`) |
 | `SQS_MAX_RECEIVE_COUNT` | `5` | recebimentos antes do redrive para a DLQ |
 | `SQS_VISIBILITY_TIMEOUT_SECONDS` / `SQS_WAIT_TIME_SECONDS` | `60` / `10` | consumidor |
-| `OUTBOX_BATCH_SIZE` / `OUTBOX_POLL_INTERVAL_MS` / `OUTBOX_LEASE_MS` | `50` / `500` / `30000` | publisher |
+| `OUTBOX_BATCH_SIZE` / `OUTBOX_POLL_INTERVAL_MS` / `OUTBOX_LEASE_MS` | `100` / `500` / `30000` | publisher |
+| `OUTBOX_PUBLISH_CONCURRENCY` | `8` | `SendMessageBatch` simultâneos por rodada (uma wallet fica sempre na mesma faixa: ordem FIFO preservada) |
+| `QUEUE_DEPTH_INTERVAL_MS` | `15000` | papel `scheduler`: lê a profundidade das filas (inclusive a DLQ) para `wagering_queue_depth` |
 | `REFERENCE_RETRY_*` | 1 s, teto 60 s, 10 tentativas, TTL 15 min | §7.1 (ADR-12) |
 | `LOG_LEVEL` | `info` | pino |
 
@@ -190,6 +222,8 @@ As decisões (30 ADRs), as adaptações das assinaturas sugeridas, a escalabilid
 | [docs/03-padroes-arquitetura.md](./docs/03-padroes-arquitetura.md) | hexagonal, padrões NestJS, schema, concorrência, mensageria, retries |
 | [docs/04-estrategia-testes.md](./docs/04-estrategia-testes.md) | TDD, cenários de unidade, integração, concorrência e carga |
 | [docs/05-diagramas.md](./docs/05-diagramas.md) | contexto, deploy, componentes, ER, estados, sequências |
-| [docs/06-observabilidade.md](./docs/06-observabilidade.md) | métricas e logs; dashboards e alertas planejados como diferencial |
+| [docs/06-observabilidade.md](./docs/06-observabilidade.md) | métricas, logs, dashboards e alertas (Prometheus, Grafana, e-mail) |
 | [docs/07-conformidade.md](./docs/07-conformidade.md) | matriz enunciado (§1–§14) → onde → teste → situação |
+| [docs/08-defesa-tecnica.md](./docs/08-defesa-tecnica.md) | revisão técnica: 9 achados e suas correções, respostas às perguntas de arquitetura, todos os retries |
+| [docs/load-test-report.md](./docs/load-test-report.md) | teste de carga: ambiente, metodologia, resultados, gargalo da outbox e correções |
 | [docs/CHALLENGE.md](./docs/CHALLENGE.md) | enunciado original |

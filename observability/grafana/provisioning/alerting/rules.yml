@@ -1,0 +1,582 @@
+# Alertas por severidade (docs/06 §7). Expressões normalizadas para "> 0 dispara".
+# Outbox: medida no banco (fonte da verdade), não na métrica do publisher.
+apiVersion: 1
+groups:
+- orgId: 1
+  name: wagering-critical
+  folder: Wagering
+  interval: 30s
+  rules:
+  - uid: reconciliation-divergence
+    title: Divergência de reconciliação
+    condition: C
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: critical
+    annotations:
+      summary: 'Saldo de wallet diverge do ledger: investigar antes de qualquer correção.'
+      runbook: docs/06-observabilidade.md#7-alertas-por-severidade-observabilitygrafanaalerting
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        instant: true
+        expr: sum(increase(wagering_reconciliation_divergence_total[5m]))
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+  - uid: database-down
+    title: Banco indisponível
+    condition: C
+    for: 1m
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: critical
+    annotations:
+      summary: PostgreSQL inalcançável pelo exporter.
+      runbook: docs/06-observabilidade.md#7-alertas-por-severidade-observabilitygrafanaalerting
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        instant: true
+        expr: 1 - max(pg_up)
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+  - uid: outbox-stalled
+    title: Outbox parada
+    condition: C
+    for: 1m
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: critical
+    annotations:
+      summary: 'Evento mais antigo da outbox com mais de 5 min sem publicação (medido no banco: dispara mesmo se todos os
+        publishers morrerem).'
+      runbook: docs/06-observabilidade.md#7-alertas-por-severidade-observabilitygrafanaalerting
+    data:
+    - refId: A
+      datasourceUid: wagering-db
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        format: table
+        rawQuery: true
+        editorMode: code
+        rawSql: SELECT (COALESCE(EXTRACT(EPOCH FROM now() - min(occurred_at)), 0) - 300)::float AS value FROM outbox_messages
+          WHERE published_at IS NULL
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+- orgId: 1
+  name: wagering-medium
+  folder: Wagering
+  interval: 30s
+  rules:
+  - uid: dlq-receiving
+    title: DLQ recebendo
+    condition: C
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: medium
+    annotations:
+      summary: Mensagens na DLQ — enviadas pela aplicação nos últimos 5 min (motivo no label reason) ou paradas nela, inclusive as movidas pelo redrive do SQS. Fica ativo até a DLQ ser tratada.
+      runbook: docs/06-observabilidade.md#7-alertas-por-severidade-observabilitygrafanaalerting
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        instant: true
+        # o contador vê só o que a aplicação envia; a profundidade vê também o redrive (docs/08, div. 2)
+        expr: (sum(increase(wagering_dlq_messages_total[5m])) or vector(0)) + (max(wagering_queue_depth{queue="wager_dlq"}) or vector(0))
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+  - uid: reversal-insufficient-funds
+    title: Reversão sem saldo
+    condition: C
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: medium
+    annotations:
+      summary: 'Reversão rejeitada por saldo insuficiente: exige ação operacional.'
+      runbook: docs/06-observabilidade.md#7-alertas-por-severidade-observabilitygrafanaalerting
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        instant: true
+        expr: sum(increase(wagering_errors_total{failure_code="REVERSAL_INSUFFICIENT_FUNDS"}[10m]))
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+  - uid: processing-latency
+    title: Atraso de processamento
+    condition: C
+    for: 5m
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: medium
+    annotations:
+      summary: p95 de processamento acima de 1 s.
+      runbook: docs/06-observabilidade.md#7-alertas-por-severidade-observabilitygrafanaalerting
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        instant: true
+        expr: histogram_quantile(0.95, sum by (le) (rate(wagering_processing_duration_seconds_bucket[5m]))) - 1
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+  - uid: hot-wallet
+    title: 'Gargalo: hot wallet'
+    condition: C
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: medium
+    annotations:
+      summary: Operações estouraram o lock_timeout esperando a mesma wallet.
+      runbook: docs/06-observabilidade.md#7-alertas-por-severidade-observabilitygrafanaalerting
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        instant: true
+        expr: sum(increase(wagering_lock_timeouts_total[5m]))
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+  - uid: outbox-delayed
+    title: Outbox atrasada
+    condition: C
+    for: 5m
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: medium
+    annotations:
+      summary: Outbox com eventos pendentes há mais de 30 s (medido no banco).
+      runbook: docs/06-observabilidade.md#7-alertas-por-severidade-observabilitygrafanaalerting
+    data:
+    - refId: A
+      datasourceUid: wagering-db
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        refId: A
+        format: table
+        rawQuery: true
+        editorMode: code
+        rawSql: SELECT (COALESCE(EXTRACT(EPOCH FROM now() - min(occurred_at)), 0) - 30)::float AS value FROM outbox_messages
+          WHERE published_at IS NULL
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+  - uid: instance-down
+    title: Instância fora
+    condition: C
+    for: 1m
+    noDataState: Alerting
+    execErrState: Error
+    labels:
+      severity: medium
+    annotations:
+      summary: Menos réplicas respondendo do que o pico dos últimos 30 min; sem nenhuma réplica, a ausência de dados também
+        dispara.
+      runbook: docs/06-observabilidade.md#7-alertas-por-severidade-observabilitygrafanaalerting
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        instant: true
+        expr: max_over_time(count(up{job="wagering"} == 1)[30m:30s]) - count(up{job="wagering"} == 1)
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+  - uid: antifraud-reversal-velocity
+    title: 'Antifraude: velocidade de reversões'
+    condition: C
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: medium
+      kind: antifraud
+    annotations:
+      summary: Jogador com mais de 5 reversões na última hora (sinaliza, não bloqueia — D-19).
+    data:
+    - refId: A
+      datasourceUid: wagering-db
+      relativeTimeRange:
+        from: 3600
+        to: 0
+      model:
+        refId: A
+        format: table
+        rawQuery: true
+        editorMode: code
+        rawSql: SELECT count(*)::float AS value FROM (SELECT player_id FROM wager_transactions WHERE kind IN ('REFUND','ROLLBACK')
+          AND status = 'PROCESSED' AND processed_at > now() - interval '1 hour' GROUP BY player_id HAVING count(*) > 5) s
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+  - uid: antifraud-concurrent-games
+    title: 'Antifraude: jogos simultâneos'
+    condition: C
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: medium
+      kind: antifraud
+    annotations:
+      summary: Jogador apostando em mais de um jogo ao mesmo tempo (sinaliza, não bloqueia — D-19).
+    data:
+    - refId: A
+      datasourceUid: wagering-db
+      relativeTimeRange:
+        from: 3600
+        to: 0
+      model:
+        refId: A
+        format: table
+        rawQuery: true
+        editorMode: code
+        rawSql: SELECT count(DISTINCT t1.player_id)::float AS value FROM wager_transactions t1 JOIN wager_transactions t2
+          ON t2.player_id = t1.player_id AND t2.kind = 'BET' AND t2.status = 'PROCESSED' AND t2.game_id <> t1.game_id AND
+          t2.created_at BETWEEN t1.created_at - interval '2 minutes' AND t1.created_at + interval '2 minutes' WHERE t1.kind
+          = 'BET' AND t1.status = 'PROCESSED' AND t1.created_at > now() - interval '10 minutes'
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+- orgId: 1
+  name: wagering-light
+  folder: Wagering
+  interval: 1m
+  rules:
+  - uid: payload-conflicts
+    title: Conflitos de idempotência anormais
+    condition: C
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: light
+    annotations:
+      summary: 'Muitas chaves reutilizadas com payload diferente: provedor com bug?'
+      runbook: docs/06-observabilidade.md#7-alertas-por-severidade-observabilitygrafanaalerting
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        instant: true
+        expr: sum(increase(wagering_duplicates_detected_total{type="payload_conflict"}[15m])) - 10
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+  - uid: pending-references
+    title: Referências pendentes acumulando
+    condition: C
+    for: 5m
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: light
+    annotations:
+      summary: Mais de 100 transações aguardando a referência.
+      runbook: docs/06-observabilidade.md#7-alertas-por-severidade-observabilitygrafanaalerting
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        instant: true
+        expr: max(wagering_pending_references) - 100
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+  - uid: retries-high
+    title: Retries elevados
+    condition: C
+    for: 0s
+    noDataState: OK
+    execErrState: Error
+    labels:
+      severity: light
+    annotations:
+      summary: Mais de 50 novas tentativas em 15 min.
+      runbook: docs/06-observabilidade.md#7-alertas-por-severidade-observabilitygrafanaalerting
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        refId: A
+        instant: true
+        expr: sum(increase(wagering_retries_total[15m])) - 50
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0

@@ -13,6 +13,7 @@ import {
 } from '../../../shared/application/ports';
 import { DomainError } from '../../../shared/domain/domain-error';
 import { FailureCode } from '../../../shared/domain/failure-code';
+import { WagerTransactionFailed } from '../../messaging/domain/events/wager-transaction-failed';
 import { WagerTransactionPendingReference } from '../../messaging/domain/events/wager-transaction-pending-reference';
 import { WagerTransactionProcessed } from '../../messaging/domain/events/wager-transaction-processed';
 import { WagerTransactionRejected } from '../../messaging/domain/events/wager-transaction-rejected';
@@ -92,6 +93,26 @@ export class WagerProcessor {
     return outcome;
   }
 
+  /**
+   * Fila: tentativas esgotadas sem decisão (§6.3, D-09) → `FAILED INFRA_RETRIES_EXHAUSTED`,
+   * terminal, auditado e com evento. Não move saldo, então não precisa da wallet travada.
+   */
+  fail(input: Omit<DecisionInput, 'wallet'>, details: Record<string, unknown>): void {
+    const { transaction: tx, now } = input;
+    const fromStatus = tx.status;
+    tx.fail(FailureCode.InfraRetriesExhausted, now);
+    input.scope.outbox.add(
+      OutboxMessage.enqueue(WagerTransactionFailed.from(tx, this.eventContext(input))),
+    );
+    this.audit({ ...input, walletId: tx.walletId }, 'FAILED', {
+      transactionId: tx.id,
+      fromStatus,
+      toStatus: tx.status,
+      failureCode: FailureCode.InfraRetriesExhausted,
+      details,
+    });
+  }
+
   /** Pendentes que aguardavam esta transação são reavaliadas já na próxima rodada do worker. */
   private wakeDependents(input: DecisionInput): Promise<void> {
     const { transaction: tx } = input;
@@ -123,16 +144,14 @@ export class WagerProcessor {
 
     let reference: WagerTransaction | undefined;
     if (tx.referenceExternalTransactionId) {
-      // ordem de locks: wallet (já travada) → referência — evita deadlock (docs/03 §6)
+      // sem lock próprio: a referência válida está na wallet já travada (revisão técnica, div. 7)
       reference = await input.scope.transactions.findByProviderExternal(
         tx.providerId,
         tx.referenceExternalTransactionId,
-        { lock: true },
       );
-      const existingReversal =
-        tx.isReversal() && reference
-          ? await input.scope.transactions.findProcessedReversalOf(reference.id)
-          : undefined;
+      const existingReversal = reference
+        ? await input.scope.transactions.findProcessedReversalOf(reference.id)
+        : undefined;
       const decision = this.referencePolicy.evaluate({
         transaction: tx,
         reference,
@@ -280,7 +299,7 @@ export class WagerProcessor {
     input.scope.outbox.add(OutboxMessage.enqueue(event));
   }
 
-  private eventContext(input: DecisionInput) {
+  private eventContext(input: Pick<DecisionInput, 'meta' | 'now'>) {
     return {
       eventId: this.ids.next(),
       correlationId: input.meta.correlationId,

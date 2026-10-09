@@ -1,0 +1,23 @@
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 5s
+
+  # Usuário SOMENTE LEITURA (criado pelo serviço obs-setup): painéis exatos sobre ledger e auditoria
+  - name: Wagering DB
+    uid: wagering-db
+    type: grafana-postgresql-datasource
+    url: postgres:5432
+    user: grafana_ro
+    secureJsonData:
+      password: grafana_ro
+    jsonData:
+      database: wagering
+      sslmode: disable
+      postgresVersion: 1700

@@ -47,6 +47,13 @@ const TRANSIENT_CODES = new Set([
   'ECONNRESET',
   'ETIMEDOUT',
   'EPIPE',
+  // resolução de nome/rede: com o container do Postgres parado, o DNS do Docker não resolve
+  // `postgres` e o driver lança `getaddrinfo ETIMEOUT` (achado pela suíte de evidências, A11)
+  'ETIMEOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
   '55P03', // lock_not_available (lock_timeout)
   '57014', // query_canceled (statement_timeout)
   '57P01', // admin_shutdown
@@ -88,12 +95,13 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
         },
       );
     } catch (error) {
-      throw translate(error);
+      throw translateDriverError(error);
     }
   }
 }
 
-function translate(error: unknown): unknown {
+/** Traduz erros do driver para o vocabulário da aplicação (exportado para teste). */
+export function translateDriverError(error: unknown): unknown {
   if (error instanceof UniqueConstraintViolationException) {
     return new UniqueConstraintViolation(
       (error as UniqueConstraintViolationException & { constraint?: string }).constraint ?? '',
@@ -222,17 +230,9 @@ class MikroOrmWagerTransactionRepository implements WagerTransactionRepository {
     return this.toDomain(await this.em.findOne(WagerTransactionRecord, { idempotencyKey }));
   }
 
-  async findByProviderExternal(
-    providerId: string,
-    externalTransactionId: string,
-    options: { lock?: boolean } = {},
-  ) {
+  async findByProviderExternal(providerId: string, externalTransactionId: string) {
     return this.toDomain(
-      await this.em.findOne(
-        WagerTransactionRecord,
-        { providerId, externalTransactionId },
-        options.lock ? { lockMode: LockMode.PESSIMISTIC_WRITE } : {},
-      ),
+      await this.em.findOne(WagerTransactionRecord, { providerId, externalTransactionId }),
     );
   }
 

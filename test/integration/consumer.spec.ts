@@ -134,6 +134,13 @@ describe('consumidor SQS (§10)', () => {
     const [tx] = await transactionsOf(wallet);
     expect(tx).toMatchObject({ status: 'REJECTED', failure_code: 'INSUFFICIENT_FUNDS' });
     expect(await drainDlq(sqs, dlqUrl)).toEqual([]);
+
+    // wallet inexistente não vira transação, mas o provedor é avisado (docs/08, div. 5)
+    const [event] = await sql`
+      SELECT payload->'data'->>'failureCode' AS code FROM outbox_messages
+       WHERE event_type = 'WagerOperationRejected'
+         AND payload->'data'->>'walletId' = ${ghost.walletId}`;
+    expect(event.code).toBe('WALLET_NOT_FOUND');
   });
 
   it('IT-14 mensagens permanentemente inválidas vão direto para a DLQ', async () => {
@@ -222,6 +229,142 @@ describe('consumidor SQS (§10)', () => {
 
     expect(await drainDlq(sqs, dlqUrl)).toHaveLength(1);
     expect(await transactionsOf(wallet)).toHaveLength(0);
+  });
+
+  describe('revisão técnica (docs/08)', () => {
+    it('div. 2: a profundidade da DLQ enxerga o redrive feito pelo próprio SQS', async () => {
+      await drainDlq(sqs, dlqUrl);
+      const wallet = await createWallet(api.url, '100.00');
+      await send(envelope(wager(wallet)), wallet);
+      // queda em loop (sem ack nem visibilidade): só o SQS move a mensagem para a DLQ
+      await withConsumer(() => waitFor(drained, 40_000), {
+        FAULT_POINTS: 'consumer.before-process',
+      });
+
+      await withConsumer(
+        async (scheduler) => {
+          await waitFor(async () => {
+            const metrics = await (await fetch(`${scheduler.url}/metrics`)).text();
+            return metrics.includes('wagering_queue_depth{queue="wager_dlq"} 1');
+          });
+        },
+        { APP_ROLE: ['scheduler'], QUEUE_DEPTH_INTERVAL_MS: 1_000 } as Partial<Env>,
+      );
+      expect(await drainDlq(sqs, dlqUrl)).toHaveLength(1);
+    });
+
+    it('div. 3: erro de programação vai direto para a DLQ (motivo "bug"), sem retries', async () => {
+      await drainDlq(sqs, dlqUrl);
+      const wallet = await createWallet(api.url, '100.00');
+      await send(envelope(wager(wallet)), wallet);
+
+      await withConsumer(
+        async (consumer) => {
+          await waitFor(drained);
+          const metrics = await (await fetch(`${consumer.url}/metrics`)).text();
+          expect(metrics).toContain('wagering_retries_total{component="consumer"} 0');
+          expect(metrics).toContain('wagering_dlq_messages_total{reason="bug"} 1');
+        },
+        { FAULT_POINTS: 'consumer.before-process:bug' },
+      );
+      expect((await drainDlq(sqs, dlqUrl)).map((m) => m.reason)).toEqual(['bug']);
+    });
+
+    it('div. 4: falha transitória da 1ª mensagem do grupo não deixa a 2ª passar na frente', async () => {
+      const wallet = await createWallet(api.url, '100.00');
+      const first = envelope(
+        wager(wallet, { externalTransactionId: 'fifo-1', money: brl('80.00') }),
+      );
+      const second = envelope(
+        wager(wallet, { externalTransactionId: 'fifo-2', money: brl('80.00') }),
+      );
+      await send(first, wallet);
+      await send(second, wallet);
+
+      // a 1ª falha uma vez (transitória); sem a correção, a 2ª levava os 80.00
+      await withConsumer(
+        async () => {
+          await waitFor(
+            async () => (await transactionsOf(wallet)).length === 2 && (await drained()),
+          );
+        },
+        { FAULT_POINTS: 'consumer.before-process:transient-once' },
+      );
+
+      const rows = await transactionsOf(wallet);
+      const byId = Object.fromEntries(
+        rows.map((r: { external_transaction_id: string }) => [r.external_transaction_id, r]),
+      );
+      expect(byId['fifo-1']).toMatchObject({ status: 'PROCESSED' });
+      expect(byId['fifo-2']).toMatchObject({
+        status: 'REJECTED',
+        failure_code: 'INSUFFICIENT_FUNDS',
+      });
+      await assertLedgerConsistency(sql, wallet.walletId);
+    });
+
+    it('div. 1: tentativas esgotadas → FAILED INFRA_RETRIES_EXHAUSTED auditado, com evento, e DLQ', async () => {
+      await drainDlq(sqs, dlqUrl);
+      const wallet = await createWallet(api.url, '100.00');
+      const message = envelope(wager(wallet, { money: brl('10.00') }));
+      await send(message, wallet);
+
+      // outra transação segura a wallet o tempo todo: toda tentativa estoura o lock_timeout.
+      // NO KEY UPDATE bloqueia o processamento (FOR UPDATE), mas não a FK do registro FAILED
+      let release: () => void = () => {};
+      const holder = sql.begin(async (tx) => {
+        await tx`SELECT id FROM wallets WHERE id = ${wallet.walletId} FOR NO KEY UPDATE`;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      });
+      try {
+        await withConsumer(
+          async (consumer) => {
+            await waitFor(async () => (await transactionsOf(wallet)).length === 1, 40_000);
+            await waitFor(drained);
+            const metrics = await (await fetch(`${consumer.url}/metrics`)).text();
+            expect(metrics).toContain('wagering_dlq_messages_total{reason="retries_exhausted"} 1');
+          },
+          { DB_LOCK_TIMEOUT_MS: 300 },
+        );
+      } finally {
+        release();
+        await holder;
+      }
+
+      const [tx] = await transactionsOf(wallet);
+      expect(tx).toMatchObject({ status: 'FAILED', failure_code: 'INFRA_RETRIES_EXHAUSTED' });
+      const [audit] = await sql`
+        SELECT action, source, message_id FROM wager_transaction_audit
+         WHERE transaction_id = ${tx.id}`;
+      expect(audit).toEqual({ action: 'FAILED', source: 'SQS', message_id: message.messageId });
+      const [event] = await sql`
+        SELECT event_type FROM outbox_messages
+         WHERE payload->'data'->>'transactionId' = ${tx.id}`;
+      expect(event.event_type).toBe('WagerTransactionFailed');
+      expect((await drainDlq(sqs, dlqUrl)).map((m) => m.reason)).toEqual(['retries_exhausted']);
+
+      // replay pelo HTTP: falha permanente de infraestrutura, nunca 422 de negócio
+      const replay = await fetch(`${api.url}/wagering/transactions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'idempotency-key': message.data.idempotencyKey,
+        },
+        body: JSON.stringify((({ idempotencyKey: _, ...data }) => data)(message.data)),
+      });
+      expect(replay.status).toBe(500);
+      expect(replay.headers.get('retry-after')).toBeNull();
+      expect(await replay.json()).toMatchObject({
+        failureCode: 'INFRA_RETRIES_EXHAUSTED',
+        transactionStatus: 'FAILED',
+      });
+      await assertLedgerConsistency(sql, wallet.walletId);
+      expect(
+        (await sql`SELECT balance::text AS b FROM wallets WHERE id = ${wallet.walletId}`)[0].b,
+      ).toBe('100.00');
+    });
   });
 
   it('CT-05 consumidor morre depois do commit e antes do ack: outra instância não duplica', async () => {

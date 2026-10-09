@@ -110,9 +110,12 @@ test/
 | Advisory lock | funciona, mas lock de linha é mais simples, já cobre o caso e é liberado no commit/rollback |
 | Lock global | proibido (restrição 6) |
 
-**Ordem de aquisição de locks** (evita deadlock):
-1. wallet (`FOR UPDATE`);
-2. transação referenciada, se houver (`FOR UPDATE`, que serializa reversões concorrentes da mesma referência).
+**Um único lock por operação:** a wallet (`FOR UPDATE`). A transação referenciada é lida **sem**
+lock: se for válida, pertence à mesma wallet, e toda mudança nela acontece sob esse mesmo lock;
+reversões concorrentes da mesma referência já são serializadas por ele, e o índice
+`uq_tx_single_reversal` é a última barreira. (Até a I8 havia um `FOR UPDATE` na referência; a
+revisão técnica mostrou que ele só tinha efeito numa referência de **outra** wallet — o caso
+inválido — onde travava uma linha alheia e abria espaço para deadlock entre wallets.)
 
 Toda transação toca **uma única wallet**, então não há ciclo entre wallets.
 
@@ -253,7 +256,7 @@ CREATE TABLE outbox_messages (
   locked_by       text,
   published_at    timestamptz
 );
-CREATE INDEX ix_outbox_due ON outbox_messages (next_attempt_at) WHERE published_at IS NULL;
+CREATE INDEX ix_outbox_pending ON outbox_messages (occurred_at, id) WHERE published_at IS NULL;  -- I8: era (next_attempt_at); ver relatório de carga
 ```
 
 ## 8. Mensageria
@@ -281,7 +284,7 @@ CREATE INDEX ix_outbox_due ON outbox_messages (next_attempt_at) WHERE published_
 ## 9. Worker de referências pendentes (§7.1)
 
 - Faz claim com `FOR UPDATE SKIP LOCKED` sobre `status = 'PENDING_REFERENCE' AND next_attempt_at <= now()`. Assim, várias instâncias trabalham em paralelo sem pegar a mesma linha.
-- Para cada pendência, **primeiro tenta resolver a referência** (travando a wallet e a referência, pelo mesmo fluxo do use case). Só se ela continuar ausente consulta a política.
+- Para cada pendência, **primeiro tenta resolver a referência** (travando a wallet, pelo mesmo fluxo do use case). Só se ela continuar ausente consulta a política.
 - A decisão é da `ReferenceRetryPolicy` (domínio, pura e testada — UT-R01..R06):
 
 | Parâmetro | Valor | Justificativa |
@@ -299,9 +302,11 @@ CREATE INDEX ix_outbox_due ON outbox_messages (next_attempt_at) WHERE published_
 | Laço | Gatilho | Backoff | Limite | Ao esgotar | Métrica (§12) |
 |---|---|---|---|---|---|
 | **Referência pendente** (§7.1) | referência ainda ausente | `min(1 s × 2ⁿ, 60 s)` + jitter 20% | 10 tentativas ou TTL 15 min | `REJECTED REFERENCE_NOT_FOUND` + evento | `retries_total{component="pending_worker"}`, `pending_references` |
-| **Consumidor SQS** (§10) | erro transitório (Postgres/SQS fora, `lock_timeout`) | `ChangeMessageVisibility` = `min(2ⁿ s, 300 s)` + jitter, com n = `ApproximateReceiveCount` | `maxReceiveCount = 5` | redrive automático para a DLQ | `retries_total{component="consumer"}`, `dlq_messages_total` |
-| **Consumidor SQS** — erro permanente | JSON/schema inválido, `type` desconhecido, payload divergente no inbox | sem retry | — | DLQ imediata + `DeleteMessage` | `dlq_messages_total{reason}` |
+| **Consumidor SQS** (§10) | erro transitório ou desconhecido (Postgres/DNS/rede fora, `lock_timeout`) | `ChangeMessageVisibility` = `min(2ⁿ s, 300 s)` + jitter, com n = `ApproximateReceiveCount` (2, 4, 8, 16 s…); as **seguintes do mesmo grupo voltam junto**, sem processar (ordem FIFO) | `maxReceiveCount = 5` | na **última recepção**: `FAILED INFRA_RETRIES_EXHAUSTED` + auditoria + `WagerTransactionFailed` e DLQ `retries_exhausted` pela aplicação; se nem isso for possível (banco fora), DLQ sem registro. O redrive do SQS fica como rede de segurança (processo caindo em loop) e aparece em `queue_depth{queue="wager_dlq"}` | `retries_total{component="consumer"}`, `dlq_messages_total{reason}`, `queue_depth` |
+| **Consumidor SQS** — erro permanente | JSON/schema inválido, `type` desconhecido, payload divergente no inbox, categoria `permanent` | sem retry | — | DLQ imediata + `DeleteMessage` | `dlq_messages_total{reason}` |
+| **Consumidor SQS** — erro de programação | `InvariantViolationError`, `TypeError`/`RangeError`/`ReferenceError` sem `code` de sistema | sem retry: reprocessar daria o mesmo erro | — | DLQ imediata, motivo `bug` | `dlq_messages_total{reason="bug"}` |
 | **Consumidor SQS** — erro de negócio | ex.: `INSUFFICIENT_FUNDS` | sem retry (resultado já persistido) | — | ack | `wager_transactions_total{status="REJECTED"}` |
+| **Consumidor SQS** — rejeição sem transação | conflito de idempotência, wallet inexistente | sem retry | — | ack + evento `WagerOperationRejected` (o provedor não tem resposta síncrona) | `duplicates_detected_total`, `errors_total` |
 | **Publisher da outbox** (§11) | falha ao publicar no SQS | `min(1 s × 2ⁿ, 5 min)` (`OutboxMessage.scheduleRetry`) | **sem limite**: um evento confirmado nunca é descartado | alerta de `outbox_lag_seconds`; o lease garante que outra instância assuma | `retries_total{component="outbox"}`, `outbox_lag_seconds` |
 | **Lock da wallet** (HTTP) | `lock_timeout` de 5 s | sem retry no servidor | — | `503` + `Retry-After`; o provedor reenvia com a mesma `Idempotency-Key` (seguro por idempotência) | `lock_timeouts_total`, `lock_conflicts_total` |
 
