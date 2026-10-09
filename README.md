@@ -2,7 +2,7 @@
 
 Serviço financeiro distribuído que processa transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) de múltiplos provedores, com correção sob duplicidade, entrega fora de ordem e concorrência entre instâncias.
 
-> 🚧 **Status:** Iterações 0 (fundação), 1 (domínio puro em TDD — 208 testes de unidade) e 2 (schema com garantias no banco, API de wallets, ledger, reconciliação, `/metrics` — 43 testes de integração) concluídas. Conformidade com o enunciado em [docs/07](./docs/07-conformidade.md). Próxima: Iteração 2 — persistência das wallets. Ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações).
+> 🚧 **Status:** Iterações 0 a 3 concluídas: fundação, domínio puro em TDD (208 testes de unidade), schema com garantias no banco e API completa de wallets e transações com idempotência, concorrência por wallet e auditoria (77 testes de integração). Próxima: I4 — publicação da outbox. Conformidade com o enunciado em [docs/07](./docs/07-conformidade.md). Próxima: Iteração 2 — persistência das wallets. Ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações).
 
 ## Stack
 
@@ -53,8 +53,14 @@ AWS_ENDPOINT_URL=http://localhost:4566 PORT=3100 bun run start:dev
 | `GET` | `/wallets/:walletId` | consulta a wallet |
 | `GET` | `/wallets/:walletId/ledger?cursor=…&limit=50` | ledger paginado por cursor opaco (máx. 200) |
 | `POST` | `/wallets/:walletId/reconciliation` | saldo armazenado × reconstruído pelo ledger |
+| `POST` | `/wagering/transactions` | submete `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK` (header `Idempotency-Key` obrigatório) |
+| `GET` | `/wagering/transactions/:transactionId` | consulta por id interno |
+| `GET` | `/providers/:providerId/wagering/transactions/:externalTransactionId` | consulta pelo id do provedor |
+| `GET` | `/wagering/transactions/:transactionId/audit` | linha do tempo imutável de decisões (auditoria) |
 | `GET` | `/health/live`, `/health/ready` | liveness e readiness (Postgres + SQS) |
 | `GET` | `/metrics` | métricas Prometheus **da réplica que respondeu** (colete cada instância) |
+
+**Status HTTP de `POST /wagering/transactions`:** `201` processada · `200` replay · `202` aguardando referência · `400` payload inválido · `404` wallet inexistente · `409` conflito de idempotência · `422` rejeição de negócio (com `failureCode`) · `503` indisponibilidade temporária (com `Retry-After`).
 
 Valores monetários são sempre strings com exatamente 2 casas (`"25.00"`). Erros seguem RFC 9457 (`application/problem+json`) com `failureCode` estável e `correlationId`.
 

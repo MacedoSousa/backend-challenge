@@ -1,20 +1,32 @@
 import { Controller, Get, Global, Header, Inject, Injectable, Module } from '@nestjs/common';
 import type { Logger } from 'pino';
-import { Counter, collectDefaultMetrics, Registry } from 'prom-client';
+import { Counter, collectDefaultMetrics, Histogram, Registry } from 'prom-client';
+import { APP_CONFIG } from '../../config/config.module';
+import type { Env } from '../../config/env';
 import { Public } from '../../modules/auth/public.decorator';
 import {
   APP_LOGGER,
   type AppLogger,
   CLOCK,
   type Clock,
+  type DuplicateType,
+  FAULT_INJECTOR,
+  type FaultInjector,
   ID_GENERATOR,
   type IdGenerator,
+  INSTANCE_ID,
   METRICS,
   type Metrics,
+  PLAYER_SESSION_POLICY,
+  type PlayerSessionPolicy,
+  type Source,
 } from '../application/ports';
 import { LOGGER } from './logging/logging.module';
 
 export const METRICS_REGISTRY = Symbol('METRICS_REGISTRY');
+
+/** Espera acima disso conta como conflito de lock (duas operações disputando a wallet). */
+const LOCK_CONTENTION_THRESHOLD_SECONDS = 0.005;
 
 class SystemClock implements Clock {
   now(): Date {
@@ -28,29 +40,134 @@ class UuidV7Generator implements IdGenerator {
   }
 }
 
-/** Métricas de negócio (§12) em formato Prometheus, prefixo `wagering_`. */
+/** Política padrão (D-19): o serviço não restringe jogos simultâneos. */
+class AllowAllSessionPolicy implements PlayerSessionPolicy {
+  async canBet(): Promise<boolean> {
+    return true;
+  }
+}
+
+export class InjectedFaultError extends Error {
+  constructor(readonly point: string) {
+    super(`falha injetada em ${point}`);
+    this.name = 'InjectedFaultError';
+  }
+}
+
+/** Ativo somente com NODE_ENV=test; em qualquer outro ambiente é no-op. */
+class EnvFaultInjector implements FaultInjector {
+  private readonly points: ReadonlySet<string>;
+
+  constructor(env: Env) {
+    this.points =
+      env.NODE_ENV === 'test'
+        ? new Set(
+            env.FAULT_POINTS.split(',')
+              .map((point) => point.trim())
+              .filter(Boolean),
+          )
+        : new Set();
+  }
+
+  trigger(point: string): void {
+    if (this.points.has(point)) throw new InjectedFaultError(point);
+  }
+}
+
+/** Métricas de negócio (§12) em formato Prometheus, prefixo `wagering_`, por instância. */
 @Injectable()
 export class PrometheusMetrics implements Metrics {
   private readonly reconciliations: Counter<'result'>;
   private readonly divergences: Counter;
+  private readonly transactions: Counter<'kind' | 'status' | 'source'>;
+  private readonly duration: Histogram<'kind' | 'status' | 'source'>;
+  private readonly duplicates: Counter<'source' | 'type'>;
+  private readonly lockWaits: Histogram;
+  private readonly lockConflicts: Counter;
+  private readonly lockTimeouts: Counter;
+  private readonly errors: Counter<'category' | 'failure_code'>;
 
   constructor(@Inject(METRICS_REGISTRY) registry: Registry) {
+    const registers = [registry];
     this.reconciliations = new Counter({
       name: 'wagering_reconciliations_total',
       help: 'Reconciliações executadas, por resultado',
       labelNames: ['result'],
-      registers: [registry],
+      registers,
     });
     this.divergences = new Counter({
       name: 'wagering_reconciliation_divergence_total',
       help: 'Wallets cujo saldo diverge do ledger (deve permanecer 0)',
-      registers: [registry],
+      registers,
+    });
+    this.transactions = new Counter({
+      name: 'wagering_transactions_total',
+      help: 'Transações decididas, por tipo, status final e origem',
+      labelNames: ['kind', 'status', 'source'],
+      registers,
+    });
+    this.duration = new Histogram({
+      name: 'wagering_processing_duration_seconds',
+      help: 'Latência do processamento de uma transação (lock + decisão + commit)',
+      labelNames: ['kind', 'status', 'source'],
+      buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
+      registers,
+    });
+    this.duplicates = new Counter({
+      name: 'wagering_duplicates_detected_total',
+      help: 'Duplicatas detectadas: replay idempotente, conflito de payload, chave divergente',
+      labelNames: ['source', 'type'],
+      registers,
+    });
+    this.lockWaits = new Histogram({
+      name: 'wagering_lock_wait_seconds',
+      help: 'Espera pelo lock da wallet',
+      buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 2.5, 5],
+      registers,
+    });
+    this.lockConflicts = new Counter({
+      name: 'wagering_lock_conflicts_total',
+      help: 'Operações que esperaram outra operação liberar o lock da mesma wallet',
+      registers,
+    });
+    this.lockTimeouts = new Counter({
+      name: 'wagering_lock_timeouts_total',
+      help: 'Esperas pelo lock que estouraram o lock_timeout (hot wallet)',
+      registers,
+    });
+    this.errors = new Counter({
+      name: 'wagering_errors_total',
+      help: 'Erros por categoria e failureCode',
+      labelNames: ['category', 'failure_code'],
+      registers,
     });
   }
 
   reconciliation(result: 'consistent' | 'inconsistent'): void {
     this.reconciliations.inc({ result });
     if (result === 'inconsistent') this.divergences.inc();
+  }
+
+  transaction(labels: { kind: string; status: string; source: Source }, seconds: number): void {
+    this.transactions.inc(labels);
+    this.duration.observe(labels, seconds);
+  }
+
+  duplicate(labels: { source: Source; type: DuplicateType }): void {
+    this.duplicates.inc(labels);
+  }
+
+  lockWait(seconds: number): void {
+    this.lockWaits.observe(seconds);
+    if (seconds >= LOCK_CONTENTION_THRESHOLD_SECONDS) this.lockConflicts.inc();
+  }
+
+  lockTimeout(): void {
+    this.lockTimeouts.inc();
+  }
+
+  error(labels: { category: string; failureCode: string }): void {
+    this.errors.inc({ category: labels.category, failure_code: labels.failureCode });
   }
 }
 
@@ -66,7 +183,7 @@ export class MetricsController {
   }
 }
 
-/** Serviços técnicos transversais: relógio, ids, logger de aplicação e métricas. */
+/** Serviços técnicos transversais: relógio, ids, logger, métricas e pontos de extensão. */
 @Global()
 @Module({
   controllers: [MetricsController],
@@ -74,6 +191,13 @@ export class MetricsController {
     { provide: CLOCK, useClass: SystemClock },
     { provide: ID_GENERATOR, useClass: UuidV7Generator },
     { provide: APP_LOGGER, inject: [LOGGER], useFactory: (logger: Logger): AppLogger => logger },
+    { provide: INSTANCE_ID, inject: [APP_CONFIG], useFactory: (env: Env) => env.INSTANCE_ID },
+    { provide: PLAYER_SESSION_POLICY, useClass: AllowAllSessionPolicy },
+    {
+      provide: FAULT_INJECTOR,
+      inject: [APP_CONFIG],
+      useFactory: (env: Env) => new EnvFaultInjector(env),
+    },
     {
       provide: METRICS_REGISTRY,
       useFactory: () => {
@@ -84,6 +208,15 @@ export class MetricsController {
     },
     { provide: METRICS, useClass: PrometheusMetrics },
   ],
-  exports: [CLOCK, ID_GENERATOR, APP_LOGGER, METRICS, METRICS_REGISTRY],
+  exports: [
+    CLOCK,
+    ID_GENERATOR,
+    APP_LOGGER,
+    INSTANCE_ID,
+    PLAYER_SESSION_POLICY,
+    FAULT_INJECTOR,
+    METRICS,
+    METRICS_REGISTRY,
+  ],
 })
 export class PlatformModule {}

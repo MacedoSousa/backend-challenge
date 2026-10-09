@@ -16,6 +16,7 @@ import { currentContext } from '../../infrastructure/logging/request-context';
 /** Status por código específico; o restante segue a categoria (docs/01 §8). */
 const STATUS_BY_CODE: Partial<Record<FailureCode, number>> = {
   [FailureCode.WalletNotFound]: HttpStatus.NOT_FOUND,
+  [FailureCode.TransactionNotFound]: HttpStatus.NOT_FOUND,
 };
 
 const STATUS_BY_CATEGORY: Record<ErrorCategory, number> = {
