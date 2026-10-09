@@ -127,6 +127,7 @@ flowchart LR
 | IT-23 | linha do tempo: BET aplicada → 2 replays → 1 conflito de payload → REFUND | `GET …/audit` retorna `PROCESSED`, 2× `IDEMPOTENT_REPLAY`, `IDEMPOTENCY_CONFLICT`, `REVERSED_BY`, em ordem, com origem e `correlationId` |
 | IT-24 | atomicidade da auditoria: falha forçada após gravar auditoria e antes do commit | nenhuma linha de auditoria órfã |
 | IT-25 | rastreio do dinheiro: para cada lançamento do ledger existe exatamente 1 auditoria `PROCESSED` com o mesmo `ledger_entry_id` | consulta de verificação vazia |
+| IT-26 | job de retenção com inbox/outbox antigas e recentes | remove só inbox processada e outbox publicada além da retenção; ledger e auditoria intactos |
 
 ## 5. Cenários — Concorrência e Crash (CT) — paralelismo real
 
@@ -159,6 +160,7 @@ Ferramenta: **k6** em container (gera p50/p95/p99 nativamente). Ambiente: `docke
 | ST-05 | **Soak** — carga moderada por 15 min | vazamento de memória/conexões, outbox lag estável | RSS, conexões do pool, outbox lag |
 | ST-06 | **Fila** — 10k mensagens SQS com 3 consumidores | throughput assíncrono | msgs/s, lag, DLQ = 0 |
 | ST-07 | **Caos** — derrubar 1 instância no meio do ST-02 | resiliência | erros transitórios, recuperação, invariantes |
+| ST-08 | **Escala horizontal** — mesma carga (wallets distribuídas) com 1 e depois 3 instâncias | ganho real de escalar a aplicação | throughput 1× vs 3×, p95, CPU/conexões/locks do Postgres, onde satura |
 
 **Critério de aprovação (correção, não RPS):** depois de qualquer ST, a reconciliação de **todas** as wallets retorna `consistent: true`, sem débito duplicado e com a DLQ vazia (exceto mensagens propositalmente inválidas).
 

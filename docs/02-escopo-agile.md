@@ -69,6 +69,7 @@ Estimativa em *story points* (Fibonacci). Prefixo da história = épico.
 | E2-2 | `POST /wallets` com `OPENING` atômico | 3 |
 | E2-3 | `GET /wallets/:id` e `GET /wallets/:id/ledger` com cursor opaco | 3 |
 | E2-4 | `POST /wallets/:id/reconciliation` com métrica e log de divergência | 3 |
+| E2-5 | Conexão de leitura separada (`DATABASE_READ_URL`) para ledger, reconciliação, notificador e Grafana; *read-your-writes* no primário | 2 |
 
 **Aceite E2-2:** *Given* um `playerId` sem wallet BRL, *When* `POST /wallets` com `1000.00`, *Then* `201`, `version 1`, existe uma transação `OPENING PROCESSED` e um `CREDIT 1000.00`; *When* repito, *Then* `409 WALLET_ALREADY_EXISTS`.
 
@@ -94,8 +95,9 @@ Estimativa em *story points* (Fibonacci). Prefixo da história = épico.
 | ID | História | Pts |
 |---|---|---|
 | E4-1 | Eventos gravados na outbox na mesma transação SQL | 3 |
-| E4-2 | Publisher com claim por lease (`FOR UPDATE SKIP LOCKED`) e backoff | 5 |
+| E4-2 | Publisher com claim por lease (`FOR UPDATE SKIP LOCKED`), backoff e `SendMessageBatch` | 5 |
 | E4-3 | Recuperação: processo morre após commit e antes de publicar → outra instância publica | 3 |
+| E4-4 | Job de retenção de inbox processada e outbox publicada (> 7 dias, em lotes); ledger e auditoria intocáveis | 2 |
 
 ### E5 — Consumo SQS
 | ID | História | Pts |
@@ -137,6 +139,7 @@ Estimativa em *story points* (Fibonacci). Prefixo da história = épico.
 | E8-1 | Suíte de concorrência com 3 processos reais | 5 |
 | E8-2 | Testes de crash (fault injection após commit / antes do ack) | 5 |
 | E8-3 | `bun run test:load` (k6) com relatório honesto | 5 |
+| E8-4 | Teste de escala horizontal (ST-08): 1 × 3 instâncias, ganho e ponto de saturação | 3 |
 
 ### E9 — Documentação e autenticação (extensão)
 | ID | História | Pts |
@@ -147,7 +150,7 @@ Estimativa em *story points* (Fibonacci). Prefixo da história = épico.
 
 ## 6. Plano de iterações
 
-Total estimado: ~168 pts. As iterações são incrementos, não datas — a cadência real depende da disponibilidade.
+Total estimado: ~175 pts. As iterações são incrementos, não datas — a cadência real depende da disponibilidade.
 
 ```mermaid
 gantt
@@ -158,14 +161,14 @@ gantt
     I0 Fundação (E0)                    :i0, 0, 13
     section Núcleo
     I1 Domínio puro (E1)                :i1, after i0, 23
-    I2 Wallets + schema (E2)            :i2, after i1, 14
+    I2 Wallets + schema (E2)            :i2, after i1, 16
     section Transações
     I3 Processamento HTTP (E3)          :i3, after i2, 34
     section Mensageria
-    I4 Outbox (E4)                      :i4, after i3, 11
+    I4 Outbox (E4)                      :i4, after i3, 13
     I5 SQS + pending ref (E5, E6)       :i5, after i4, 24
     section Qualidade
-    I6 Observabilidade + resiliência (E7, E8) :i6, after i5, 43
+    I6 Observabilidade + resiliência (E7, E8) :i6, after i5, 46
     I7 Documentação final (E9)          :i7, after i6, 5
 ```
 

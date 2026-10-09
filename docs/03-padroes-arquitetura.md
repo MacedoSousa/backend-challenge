@@ -93,8 +93,9 @@ test/
 | Mapeamento | Entidades ORM separadas do domínio + mappers | o domínio fica sem decorators; o `rehydrate` é o ponto único de reconstrução |
 | `Money` no banco | `NUMERIC(20,2)` + `CHAR(3)` currency, via custom type que entrega `string` | o driver `pg` já retorna `numeric` como string, sem passar por `number` |
 | IDs | UUID v7 (`Bun.randomUUIDv7()`) | ordenável no tempo, bom para índices B-tree |
+| Conexões | pool por instância (`DB_POOL_MAX`); `DATABASE_READ_URL` opcional para leituras sem *read-your-writes* |
 | Isolamento | `READ COMMITTED` + locks explícitos | previsível; `SERIALIZABLE` geraria muitos aborts em hot wallet |
-| Timeouts | `lock_timeout = 5s` e `statement_timeout = 10s` por transação | evita fila infinita de locks; o timeout vira erro transitório (`503`/retry) |
+| Timeouts | `SET LOCAL lock_timeout = '5s'` e `SET LOCAL statement_timeout = '10s'` em cada transação (compatível com pooler) | evita fila infinita de locks; o timeout vira erro transitório (`503`/retry) |
 
 ## 6. Estratégia de concorrência
 
@@ -260,7 +261,7 @@ CREATE INDEX ix_outbox_due ON outbox_messages (next_attempt_at) WHERE published_
 | Ack | `DeleteMessage` só **depois** do commit |
 | Inbox | `INSERT … ON CONFLICT DO NOTHING` na mesma transação. Com 0 linhas inseridas, é duplicata → ack |
 | Outbox claim | `UPDATE … SET locked_until = now()+30s, locked_by = :instance WHERE id IN (SELECT id … FOR UPDATE SKIP LOCKED LIMIT 50) RETURNING *` |
-| Outbox publish | fora da transação do claim; sucesso → `published_at`; falha → `scheduleRetry` (backoff exponencial, teto de 5 min) |
+| Outbox publish | `SendMessageBatch` (até 10), fora da transação do claim; sucesso → `published_at`; falha → `scheduleRetry` (backoff exponencial, teto de 5 min) |
 | Garantia | *at-least-once*: o consumidor deduplica por `eventId`, e `walletVersion` no evento permite ordenar |
 
 **Classificação de erros no consumidor:**

@@ -44,7 +44,7 @@ curl localhost:3000/health/ready
 
 | Documento | Conteúdo |
 |---|---|
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | decisões (ADR), trade-offs, limitações |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | decisões (ADR), escalabilidade, trade-offs, limitações |
 | [docs/01-analise-requisitos.md](./docs/01-analise-requisitos.md) | requisitos, invariantes, ambiguidades, failure codes, HTTP |
 | [docs/02-escopo-agile.md](./docs/02-escopo-agile.md) | épicos, histórias, DoR/DoD, iterações, riscos |
 | [docs/03-padroes-arquitetura.md](./docs/03-padroes-arquitetura.md) | hexagonal, padrões NestJS, schema, concorrência, mensageria |
