@@ -27,8 +27,9 @@ const HASHED_FIELDS = [
 ] as const satisfies readonly (keyof WagerPayload)[];
 
 /**
- * JSON canônico: só os campos de negócio, chaves ordenadas em todos os níveis,
- * campos ausentes/undefined omitidos e valor monetário normalizado para 2 casas.
+ * JSON canônico: só os campos de negócio, chaves ordenadas em todos os níveis e campos
+ * ausentes/undefined omitidos. O valor monetário é validado pelo Money (forma canônica
+ * obrigatória), então "25.00" e "25" nunca coexistem: o segundo é recusado na entrada.
  */
 export function canonicalJson(payload: WagerPayload): string {
   const subset: Record<string, unknown> = {};

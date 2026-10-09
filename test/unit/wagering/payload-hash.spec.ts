@@ -4,6 +4,7 @@ import {
   payloadHash,
   type WagerPayload,
 } from '../../../src/modules/wagering/domain/payload-hash';
+import { InvalidMoneyError } from '../../../src/shared/domain/money';
 
 const payload: WagerPayload = {
   providerId: 'provider-a',
@@ -26,9 +27,9 @@ describe('UT-T09 payloadHash canônico', () => {
     expect(payloadHash(reordered)).toBe(payloadHash(payload));
   });
 
-  it('normaliza o valor monetário ("25" ≡ "25.00")', () => {
-    expect(payloadHash({ ...payload, money: { amount: '25', currency: 'BRL' } })).toBe(
-      payloadHash(payload),
+  it('recusa valor fora da forma canônica (o contrato exige 2 casas)', () => {
+    expect(() => payloadHash({ ...payload, money: { amount: '25', currency: 'BRL' } })).toThrow(
+      InvalidMoneyError,
     );
   });
 

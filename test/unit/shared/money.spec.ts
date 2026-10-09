@@ -18,15 +18,23 @@ describe('Money', () => {
     });
   });
 
-  describe('UT-M02 normalização para escala fixa de 2', () => {
+  describe('UT-M02 escala fixa de 2 casas na entrada (§6.1, D-06)', () => {
+    it.each(['0.00', '0.01', '0.50', '7.00', '25.00', '1000.00'])(
+      'aceita a forma canônica %p',
+      (amount) => {
+        expect(brl(amount).toJSON().amount).toBe(amount);
+      },
+    );
+
     it.each([
-      ['25', '25.00'],
-      ['25.5', '25.50'],
-      ['0.1', '0.10'],
-      ['007.00', '7.00'],
-      ['0', '0.00'],
-    ])('"%s" vira "%s"', (input, expected) => {
-      expect(brl(input).toJSON().amount).toBe(expected);
+      ['sem casas decimais', '25'],
+      ['uma casa decimal', '25.5'],
+      ['zero sem casas', '0'],
+      ['uma casa em valor < 1', '0.1'],
+      ['zeros à esquerda', '007.00'],
+      ['zeros à esquerda em valor < 1', '00.50'],
+    ])('rejeita %s (%p): não há arredondamento nem normalização', (_case, amount) => {
+      expect(() => brl(amount)).toThrow(InvalidMoneyError);
     });
   });
 
@@ -122,7 +130,7 @@ describe('Money', () => {
     it('isLessThan e equals', () => {
       expect(brl('9.99').isLessThan(brl('10.00'))).toBe(true);
       expect(brl('10.00').isLessThan(brl('10.00'))).toBe(false);
-      expect(brl('10').equals(brl('10.00'))).toBe(true);
+      expect(brl('10.00').equals(brl('10.00'))).toBe(true);
       expect(brl('10.00').equals(brl('10.01'))).toBe(false);
     });
   });

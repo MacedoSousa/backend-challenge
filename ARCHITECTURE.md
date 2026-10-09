@@ -24,7 +24,7 @@ Diagramas: [docs/05-diagramas.md](./docs/05-diagramas.md).
 | ADR-09 | Transactional Outbox com claim por **lease** + `FOR UPDATE SKIP LOCKED` | LISTEN/NOTIFY; CDC (Debezium) | publicação duplicada possível após expiração de lease (consumidor deduplica por `eventId`) |
 | ADR-10 | Inbox `(consumer_name, message_id)` na mesma transação SQL | dedup do SQS FIFO | a janela de 5 min do SQS não basta e não é garantia |
 | ADR-11 | Erros do consumidor: negócio → ack; transitório → backoff de visibilidade; permanente → DLQ imediata | só redrive | lógica de classificação explícita |
-| ADR-12 | Worker de pendências: backoff `min(2^n s, 60 s)`, **10 tentativas / TTL 15 min** | TTL longo (horas) | provedor que demora mais que 15 min recebe `REFERENCE_NOT_FOUND` |
+| ADR-12 | Worker de pendências: primeira tentativa em 1 s, backoff `min(2^n s, 60 s)` + jitter 20%, **10 tentativas / TTL 15 min** (o que vier primeiro), implementado como `ReferenceRetryPolicy` pura no domínio | TTL longo (horas) | provedor que demora mais que ~4 min recebe `REFERENCE_NOT_FOUND`. Tabela de todos os retries em docs/03 §9.1 |
 | ADR-13 | Eventos publicados em `wagering-events.fifo` | SNS fan-out | um destino só; fácil de trocar atrás da porta `MessagePublisher` |
 | ADR-14 | Ledger imutável por **trigger** + sem `GRANT UPDATE/DELETE` | só convenção | migrations administrativas precisam de role própria |
 | ADR-15 | Cursor do ledger = `wallet_version` (opaco em base64url) | `created_at, id` | estável e sem colisão por definição |
@@ -40,6 +40,23 @@ Diagramas: [docs/05-diagramas.md](./docs/05-diagramas.md).
 | ADR-25 | **`playerId` opaco** (UUID emitido pela plataforma, validado no contrato), nunca dado pessoal | aceitar qualquer string | o provedor precisa mapear seu ID interno para o UUID da plataforma |
 
 Interpretações de requisitos ambíguos: [docs/01-analise-requisitos.md §6](./docs/01-analise-requisitos.md#6-ambiguidades-e-decisões-adotadas).
+
+## Adaptações das assinaturas sugeridas (§6)
+
+O enunciado permite adaptar nomes e assinaturas "desde que as garantias sejam preservadas". Adaptações feitas, todas cobertas por testes:
+
+| Classe | Esqueleto do enunciado | Implementação | Por quê | Garantia preservada |
+|---|---|---|---|---|
+| `Money` | `private readonly value: Decimal` | `private readonly minorUnits: bigint` (centavos) | escala fixa 2: aritmética exata sem biblioteca (ADR-02) | imutável, exato, sem `number` |
+| `Money.from` | aceita string decimal | aceita **só** a forma canônica `"25.00"` (D-06) | §6.1 "recebido … sempre com escala fixa de 2 casas" | rejeita NaN, Infinity, notação científica, vazio, > 2 casas, negativos |
+| `Wallet.open` | `open(props): Wallet` | `open(props): { wallet, openingEntry? }` | o saldo inicial precisa nascer com seu lançamento `CREDIT`, sem quebrar `version = 1` | toda alteração de saldo tem lançamento; `version` inicia em 1 |
+| `Wallet.debit/credit` | assinatura livre | `(money, movement) → WalletLedgerEntry`; `movement.cause` escolhe `INSUFFICIENT_FUNDS` ou `REVERSAL_INSUFFICIENT_FUNDS` | saldo e ledger nascem juntos; códigos distintos (regra 9) | saldo nunca negativo |
+| `WalletLedgerEntry` | campos do esqueleto | + `walletVersion` | sequência contínua por wallet, cursor estável do ledger, `UNIQUE (wallet_id, wallet_version)` | imutável, aritmética validada |
+| `WagerTransaction.markProcessed` | `(referenceTransactionId, at)` | `({ at, balanceAfter, referenceTransactionId? })` | guarda o saldo observado para o replay fiel (regra 7) | terminais imutáveis |
+| `WagerTransaction.reject` | `(code)` | `(code, { at, balanceAfter, referenceTransactionId?, relatedTransactionId? })` | replay de rejeição + aponta a reversão vencedora (D-01) | só aceita códigos de negócio |
+| `WagerTransaction.markPendingReference` | `()` | `(nextAttemptAt)` + `scheduleReferenceRetry(nextAttemptAt)` + `attempts` | o worker do §7.1 precisa de backoff persistido | transições explícitas |
+| `WagerTransaction` | — | + `createOpening(...)` | `OPENING` só nasce por esta factory interna; `create()` o recusa | `OPENING` nunca vem da API/fila |
+| Eventos | `aggregateId` livre | `aggregateId = walletId` em todos | ordem por wallet na fila FIFO (D-08) | envelope e `data` em `MoneyProps` |
 
 ## Garantias e onde vivem
 

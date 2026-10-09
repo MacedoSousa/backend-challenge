@@ -10,8 +10,12 @@ export interface MoneyProps {
 /** Escala fixa do desafio: 2 casas decimais. Valores ficam em centavos (`bigint`). */
 const SCALE = 2;
 const FACTOR = 10n ** BigInt(SCALE);
-/** Até 18 dígitos inteiros e 1–2 decimais: cabe em NUMERIC(20,2). Sem sinal, expoente ou espaços. */
-const AMOUNT_PATTERN = /^(\d{1,18})(?:\.(\d{1,2}))?$/;
+/**
+ * Forma canônica obrigatória (§6.1: "recebido ... sempre com escala fixa de 2 casas"):
+ * até 18 dígitos inteiros sem zeros à esquerda, ponto e exatamente 2 decimais — cabe em
+ * NUMERIC(20,2). Sem sinal, expoente, espaços, arredondamento ou normalização.
+ */
+const AMOUNT_PATTERN = /^(0|[1-9]\d{0,17})\.(\d{2})$/;
 const CURRENCY_PATTERN = /^[A-Z]{3}$/;
 
 export class InvalidMoneyError extends DomainError {
@@ -46,8 +50,8 @@ export class Money {
     if (!match) {
       throw new InvalidMoneyError(`amount inválido: "${props.amount}"`, { field: 'amount' });
     }
-    const [, integer = '0', fraction = ''] = match;
-    const minorUnits = BigInt(integer) * FACTOR + BigInt(fraction.padEnd(SCALE, '0') || '0');
+    const [, integer = '0', fraction = '00'] = match;
+    const minorUnits = BigInt(integer) * FACTOR + BigInt(fraction);
     return new Money(minorUnits, currency);
   }
 
