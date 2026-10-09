@@ -1,6 +1,6 @@
 import { Controller, Get, Global, Header, Inject, Injectable, Module } from '@nestjs/common';
 import type { Logger } from 'pino';
-import { Counter, collectDefaultMetrics, Histogram, Registry } from 'prom-client';
+import { Counter, collectDefaultMetrics, Gauge, Histogram, Registry } from 'prom-client';
 import { APP_CONFIG } from '../../config/config.module';
 import type { Env } from '../../config/env';
 import { Public } from '../../modules/auth/public.decorator';
@@ -86,6 +86,9 @@ export class PrometheusMetrics implements Metrics {
   private readonly lockConflicts: Counter;
   private readonly lockTimeouts: Counter;
   private readonly errors: Counter<'category' | 'failure_code'>;
+  private readonly published: Counter;
+  private readonly retries: Counter<'component'>;
+  private readonly lag: Gauge;
 
   constructor(@Inject(METRICS_REGISTRY) registry: Registry) {
     const registers = [registry];
@@ -141,6 +144,34 @@ export class PrometheusMetrics implements Metrics {
       labelNames: ['category', 'failure_code'],
       registers,
     });
+    this.published = new Counter({
+      name: 'wagering_outbox_published_total',
+      help: 'Eventos da outbox publicados no SQS por esta instância',
+      registers,
+    });
+    this.retries = new Counter({
+      name: 'wagering_retries_total',
+      help: 'Novas tentativas agendadas, por componente',
+      labelNames: ['component'],
+      registers,
+    });
+    this.lag = new Gauge({
+      name: 'wagering_outbox_lag_seconds',
+      help: 'Idade do evento pendente mais antigo da outbox',
+      registers,
+    });
+  }
+
+  outboxPublished(count: number): void {
+    this.published.inc(count);
+  }
+
+  retry(component: 'outbox' | 'consumer' | 'pending_worker'): void {
+    this.retries.inc({ component });
+  }
+
+  outboxLag(seconds: number): void {
+    this.lag.set(seconds);
   }
 
   reconciliation(result: 'consistent' | 'inconsistent'): void {

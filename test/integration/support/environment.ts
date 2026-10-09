@@ -28,6 +28,8 @@ export async function startTestEnvironment(overrides: Record<string, string> = {
 
   const env = loadEnv({
     NODE_ENV: 'test',
+    // workers (outbox, consumidor, scheduler) só sobem nos testes que os pedem explicitamente
+    APP_ROLE: 'api',
     LOG_LEVEL: 'warn',
     PORT: '0',
     DATABASE_URL: postgres.getConnectionUri(),

@@ -165,6 +165,9 @@ export interface Metrics {
   lockWait(seconds: number): void;
   lockTimeout(): void;
   error(labels: { category: string; failureCode: string }): void;
+  outboxPublished(count: number): void;
+  retry(component: 'outbox' | 'consumer' | 'pending_worker'): void;
+  outboxLag(seconds: number): void;
 }
 
 export const INSTANCE_ID = Symbol('INSTANCE_ID');
@@ -183,4 +186,42 @@ export const FAULT_INJECTOR = Symbol('FAULT_INJECTOR');
 /** Pontos de falha nomeados, ativos só em teste (docs/04 §5); no-op em produção. */
 export interface FaultInjector {
   trigger(point: string): void;
+}
+
+/** Evento reservado (lease) por uma instância do publisher. */
+export interface ClaimedOutboxMessage {
+  message: OutboxMessage;
+  lockedBy: string;
+}
+
+export const OUTBOX_STORE = Symbol('OUTBOX_STORE');
+/**
+ * Acesso do publisher à outbox (fora da transação de negócio). O claim usa
+ * `FOR UPDATE SKIP LOCKED` + lease: várias instâncias publicam em paralelo sem pegar
+ * o mesmo evento, e um lease expirado (processo morto) libera o evento para outra.
+ */
+export interface OutboxStore {
+  claimDue(input: {
+    instanceId: string;
+    now: Date;
+    leaseMs: number;
+    limit: number;
+  }): Promise<OutboxMessage[]>;
+  /** Marca publicado só se o lease ainda é desta instância (senão outra já assumiu). */
+  markPublished(ids: string[], instanceId: string, at: Date): Promise<number>;
+  /** Grava tentativas/próxima tentativa e libera o lease. */
+  reschedule(message: OutboxMessage, instanceId: string): Promise<void>;
+  /** Idade, em segundos, do evento pendente mais antigo (0 se não houver). */
+  lagSeconds(now: Date): Promise<number>;
+}
+
+export interface PublishResult {
+  published: string[];
+  failed: { id: string; reason: string }[];
+}
+
+export const MESSAGE_PUBLISHER = Symbol('MESSAGE_PUBLISHER');
+/** Publica eventos de integração (SQS FIFO): grupo = aggregateId, dedup = eventId (D-08). */
+export interface MessagePublisher {
+  publish(messages: OutboxMessage[]): Promise<PublishResult>;
 }
