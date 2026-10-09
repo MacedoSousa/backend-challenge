@@ -14,7 +14,8 @@
     "test:integration": "bun test --timeout 180000 test/integration",
     "migration:create": "bun src/database/migrate.ts create",
     "migration:up": "bun src/database/migrate.ts up",
-    "migration:down": "bun src/database/migrate.ts down"
+    "migration:down": "bun src/database/migrate.ts down",
+    "test:concurrency": "bun test --timeout 300000 test/concurrency"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "3.1148.0",

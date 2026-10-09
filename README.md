@@ -2,7 +2,7 @@
 
 Serviço financeiro distribuído que processa transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) de múltiplos provedores, com correção sob duplicidade, entrega fora de ordem e concorrência entre instâncias.
 
-> 🚧 **Status:** Iterações 0 a 5 concluídas: todo o fluxo obrigatório funciona — API e fila SQS pelo mesmo núcleo, idempotência, concorrência por wallet, auditoria, outbox confiável, inbox/DLQ e referências fora de ordem (212 testes de unidade, 96 de integração). Próxima: I6 — testes com múltiplos processos, crash e reinício. Conformidade com o enunciado em [docs/07](./docs/07-conformidade.md). Próxima: Iteração 2 — persistência das wallets. Ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações).
+> ✅ **Status:** todo o obrigatório do enunciado implementado e testado (iterações 0 a 6): 212 testes de unidade, 96 de integração e 5 multi-processo com `SIGKILL`/`SIGTERM` reais. Conformidade item a item em [docs/07](./docs/07-conformidade.md). Conformidade com o enunciado em [docs/07](./docs/07-conformidade.md). Próxima: Iteração 2 — persistência das wallets. Ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações).
 
 ## Stack
 
@@ -71,12 +71,13 @@ Valores monetários são sempre strings com exatamente 2 casas (`"25.00"`). Erro
 | `bun run start:dev` | app com watch |
 | `bun run test:unit` | testes de unidade (sem infraestrutura) |
 | `bun run test:integration` | integração com Postgres e LocalStack **reais** via Testcontainers (precisa de Docker) |
+| `bun run test:concurrency` | múltiplos processos reais da aplicação: 3 instâncias, `SIGKILL` após commit/publicação, reinício sob carga, `SIGTERM` |
 | `bun run lint` / `bun run format` | Biome (lint + formatação) |
 | `bun run typecheck` | `tsc --noEmit` em modo strict |
 | `bun run migration:up` / `migration:down` / `migration:create` | migrations (MikroORM) |
 | `aws --profile localstack sqs list-queues` | inspecionar filas |
 
-Chegam nas próximas iterações: `test:concurrency` (I3/I6), `test:load` (I6) e o perfil `observability` com Grafana e Mailpit (I6).
+Diferenciais planejados (I8): `test:load` (k6) e o perfil `observability` com Grafana e Mailpit.
 
 ## Configuração
 
