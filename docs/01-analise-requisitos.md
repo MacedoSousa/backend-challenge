@@ -94,7 +94,7 @@ Cada decisão vira uma entrada no `ARCHITECTURE.md`.
 | D-05 | Replay deve devolver "o saldo observado naquele momento" | Transação guarda `balance_after` (snapshot), inclusive para `LOSS` e `REJECTED` | `LOSS` não tem ledger; não dá para derivar o saldo depois |
 | D-06 | Formato de entrada de `amount` | Regex estrita `^\d{1,18}(\.\d{1,2})?$`; normaliza para 2 casas antes do hash | Aceita `"25"`/`"25.5"`, rejeita `1e3`, `-1`, `"25.001"`, `""` |
 | D-07 | Valor zero | `amount > 0` para todos os kinds, exceto `LOSS` (aceita `>= 0`) | `BET 0.00` não tem semântica financeira |
-| D-08 | Destino dos eventos não é especificado | Fila `wagering-events.fifo`, `MessageGroupId = aggregateId`, `MessageDeduplicationId = eventId` | Ordem por wallet e dedup de 5 min como otimização |
+| D-08 | Destino dos eventos não é especificado | Fila `wagering-events.fifo`, `MessageGroupId = aggregateId`, `MessageDeduplicationId = eventId`. O `aggregateId` de **todos** os eventos é o `walletId`, para que os eventos de uma wallet saiam em ordem | Ordem por wallet e dedup de 5 min como otimização |
 | D-09 | Quando usar `FAILED` | Transação já persistida cujo reprocessamento esgota tentativas por erro de **infraestrutura** | `REJECTED` = negócio; `FAILED` = infra, terminal e auditável |
 | D-10 | `ROLLBACK` de `REFUND`/`WIN` que deixaria saldo negativo | `REJECTED` com `REVERSAL_INSUFFICIENT_FUNDS` (≠ `INSUFFICIENT_FUNDS`) | Exigido pela regra 9 |
 | D-11 | `OPENING` não tem round/game/provider | `provider_id = 'internal'`, `idempotency_key = 'internal:opening:{walletId}'`, `round_id/game_id` nulos só para `OPENING` (`CHECK`) | Mantém a tabela única de transações |

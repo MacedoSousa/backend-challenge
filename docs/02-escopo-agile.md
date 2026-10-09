@@ -177,7 +177,9 @@ gantt
 | Iteração | Meta (incremento) | Demonstração |
 |---|---|---|
 | **I0** ✅ | Esqueleto rodando | `docker compose up` + health verde + 1 teste de integração |
-| **I1** | Domínio provado por testes | `bun test test/unit` 100% verde, sem Nest/ORM no domínio |
+| **I1** ✅ | Domínio provado por testes | `bun test test/unit` 100% verde, sem Nest/ORM no domínio |
+
+> **I1 entregue:** 193 testes de unidade (cobertura do domínio ≈ 95% das linhas) + teste de arquitetura que impede o domínio de importar framework/ORM/SDK e de converter valores para `number`. UT-A01 (registro de auditoria por transição) foi movido para a I3, porque a auditoria é efeito do use case, não do agregado.
 | **I2** | Wallets persistidas com constraints | criar/consultar wallet; teste prova que `UPDATE` no ledger falha |
 | **I3** | Transações via HTTP corretas sob concorrência | cenário 2× `BET 80` e 50 requisições paralelas idênticas |
 | **I4** | Eventos confiáveis | matar processo entre commit e publish; evento chega |

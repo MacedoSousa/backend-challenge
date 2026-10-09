@@ -2,7 +2,7 @@
 
 Serviço financeiro distribuído que processa transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) de múltiplos provedores, com correção sob duplicidade, entrega fora de ordem e concorrência entre instâncias.
 
-> 🚧 **Status:** Iteração 0 concluída (fundação: NestJS em Bun, Compose com 3 réplicas, MikroORM, Testcontainers). Próxima: Iteração 1 — domínio. Ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações).
+> 🚧 **Status:** Iterações 0 (fundação) e 1 (domínio puro em TDD: `Money`, `Wallet`, ledger, `WagerTransaction`, `ReferencePolicy`, eventos, inbox/outbox — 193 testes de unidade) concluídas. Próxima: Iteração 2 — persistência das wallets. Ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações).
 
 ## Stack
 
