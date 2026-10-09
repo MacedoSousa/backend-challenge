@@ -174,7 +174,7 @@ gantt
 
 | Iteração | Meta (incremento) | Demonstração |
 |---|---|---|
-| **I0** | Esqueleto rodando | `docker compose up` + health verde + 1 teste de integração |
+| **I0** ✅ | Esqueleto rodando | `docker compose up` + health verde + 1 teste de integração |
 | **I1** | Domínio provado por testes | `bun test test/unit` 100% verde, sem Nest/ORM no domínio |
 | **I2** | Wallets persistidas com constraints | criar/consultar wallet; teste prova que `UPDATE` no ledger falha |
 | **I3** | Transações via HTTP corretas sob concorrência | cenário 2× `BET 80` e 50 requisições paralelas idênticas |
@@ -187,8 +187,8 @@ gantt
 
 | Risco | Prob. | Impacto | Mitigação |
 |---|---|---|---|
-| Incompatibilidade Bun × NestJS/MikroORM (decorators, `reflect-metadata`) | média | alto | spike na I0; `experimentalDecorators` + `emitDecoratorMetadata`; fallback para entidades via `EntitySchema` |
-| Testcontainers sob Bun | média | médio | spike na I0; fallback: `docker compose -f compose.test.yml` controlado pelo setup dos testes |
+| Incompatibilidade Bun × NestJS/MikroORM (decorators, `reflect-metadata`) | ~~média~~ **resolvido na I0** | alto | ✅ DI por construtor, MikroORM e migrations em `.ts` funcionam no Bun 1.4.2 |
+| Testcontainers sob Bun | ~~média~~ **resolvido na I0** | médio | ✅ Postgres + LocalStack sobem em ~6 s; 7 testes de integração verdes |
 | Testes de concorrência intermitentes (flaky) | alta | alto | barreira de sincronização, asserts só no estado final, repetição em loop no CI |
 | Docker via snap (volumes fora do `/home`) | baixa | baixo | projeto está em `/home` |
 | Escopo excessivo | média | alto | MoSCoW; diferenciais só após I6 |

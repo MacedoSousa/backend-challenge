@@ -2,43 +2,68 @@
 
 Serviço financeiro distribuído que processa transações de apostas (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) de múltiplos provedores, com correção sob duplicidade, entrega fora de ordem e concorrência entre instâncias.
 
-> 🚧 **Status:** fase de planejamento concluída; implementação em andamento (ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações)).
+> 🚧 **Status:** Iteração 0 concluída (fundação: NestJS em Bun, Compose com 3 réplicas, MikroORM, Testcontainers). Próxima: Iteração 1 — domínio. Ver [plano de iterações](./docs/02-escopo-agile.md#6-plano-de-iterações).
 
 ## Stack
 
-Bun 1.x · TypeScript (strict) · NestJS · PostgreSQL 17 · MikroORM · AWS SQS (LocalStack) · Docker Compose
+Bun 1.4 · TypeScript 5.9 (strict) · NestJS 11 · MikroORM 6 · PostgreSQL 17 · AWS SQS (LocalStack 4) · Docker Compose · Biome · zod · pino
 
 ## Pré-requisitos
 
-| Ferramenta | Versão testada |
-|---|---|
-| Bun | 1.4.2 |
-| Docker + Compose | 29.8 / v5.5 |
-| AWS CLI (opcional, inspeção das filas) | 2.37 — perfil `localstack` |
+| Ferramenta | Versão testada | Observação |
+|---|---|---|
+| Docker + Compose | 29.8 / v5.5 | o usuário precisa estar no grupo `docker` |
+| Bun | 1.4.2 | só para desenvolver/testar fora do container |
+| AWS CLI (opcional) | 2.37 | perfil `localstack` para inspecionar filas |
 
 ## Como rodar
 
 ```bash
+docker compose up -d --build --wait     # Postgres + LocalStack + setup + 3 réplicas + balanceador
+curl localhost:3000/health/ready        # {"status":"up","checks":{"postgres":"up","sqs":"up"}}
+docker compose down                     # (adicione -v para apagar o banco)
+```
+
+O que sobe:
+
+| Serviço | Papel |
+|---|---|
+| `postgres` | banco (porta 5432, usuário/senha/db `wagering`) |
+| `localstack` | SQS local (porta 4566) |
+| `setup` | *one-shot* idempotente: aplica migrations e cria as filas `wager-transactions.fifo`, `wager-transactions-dlq.fifo` (redrive após 5 tentativas) e `wagering-events.fifo` |
+| `app` ×3 | réplicas da aplicação (`APP_REPLICAS` muda a quantidade) |
+| `lb` | nginx em `localhost:3000`, round-robin entre as réplicas, failover em 1 s |
+
+## Desenvolvimento local
+
+```bash
 bun install
-docker compose up -d                # Postgres + LocalStack (filas) + 3 réplicas da app
-bun run migration:up
-curl localhost:3000/health/ready
+docker compose up -d --wait postgres localstack
+DATABASE_URL=postgres://wagering:wagering@localhost:5432/wagering \
+AWS_ENDPOINT_URL=http://localhost:4566 bun src/setup.ts      # migrations + filas
+DATABASE_URL=postgres://wagering:wagering@localhost:5432/wagering \
+AWS_ENDPOINT_URL=http://localhost:4566 PORT=3100 bun run start:dev
 ```
 
 ## Comandos
 
 | Comando | Descrição |
 |---|---|
-| `bun run start:dev` | app local com watch |
-| `bun run test:unit` | testes de unidade |
-| `bun run test:integration` | integração (Postgres + LocalStack reais via Testcontainers) |
-| `bun run test:concurrency` | concorrência, crash e múltiplas instâncias |
-| `bun run test:load` | teste de carga (k6) |
-| `bun run lint` / `bun run typecheck` | qualidade |
+| `bun run start:dev` | app com watch |
+| `bun run test:unit` | testes de unidade (sem infraestrutura) |
+| `bun run test:integration` | integração com Postgres e LocalStack **reais** via Testcontainers (precisa de Docker) |
+| `bun run lint` / `bun run format` | Biome (lint + formatação) |
+| `bun run typecheck` | `tsc --noEmit` em modo strict |
+| `bun run migration:up` / `migration:down` / `migration:create` | migrations (MikroORM) |
 | `aws --profile localstack sqs list-queues` | inspecionar filas |
-| `docker compose --profile observability up -d` | Grafana (dashboards, logs, traces, alertas) em `localhost:3001` e Mailpit (e-mails de alerta) em `localhost:8025` |
 
-> Alertas chegam por e-mail no Mailpit sem configurar nada. Para usar um SMTP real, copie `.env.example` para `.env` e preencha. O `.env` nunca é versionado.
+Chegam nas próximas iterações: `test:concurrency` (I3/I6), `test:load` (I6) e o perfil `observability` com Grafana e Mailpit (I6).
+
+## Configuração
+
+Toda a configuração vem de variáveis de ambiente, validadas no boot (`src/config/env.ts`; falha rápido com a lista de erros). Principais: `DATABASE_URL`, `DB_POOL_MAX`, `AWS_ENDPOINT_URL`, `APP_ROLE` (`api,consumer,outbox,scheduler,notifier` ou `all`), `LOG_LEVEL`, `PORT`.
+
+> Alertas chegarão por e-mail no Mailpit sem configurar nada. Para usar um SMTP real, copie `.env.example` para `.env` e preencha. O `.env` nunca é versionado.
 
 ## Documentação
 
