@@ -1,0 +1,18 @@
+# dependências e build
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# segredos — NUNCA versionar
+.env
+.env.*
+!.env.example
+
+# runtime / ferramentas
+*.log
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+test/load/results/
