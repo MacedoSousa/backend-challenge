@@ -128,6 +128,11 @@ flowchart LR
 | IT-24 | atomicidade da auditoria: falha forçada após gravar auditoria e antes do commit | nenhuma linha de auditoria órfã |
 | IT-25 | rastreio do dinheiro: para cada lançamento do ledger existe exatamente 1 auditoria `PROCESSED` com o mesmo `ledger_entry_id` | consulta de verificação vazia |
 | IT-26 | job de retenção com inbox/outbox antigas e recentes | remove só inbox processada e outbox publicada além da retenção; ledger e auditoria intactos |
+| IT-27 | **mesmo ID, valor diferente**: `BET bet-1` de `1000.00`, depois `BET bet-1` de `10.00` (mesma key) | `409 IDEMPOTENCY_PAYLOAD_MISMATCH`; saldo e ledger só com o débito de `1000.00`; auditoria `IDEMPOTENCY_CONFLICT`; a aposta original não é sobrescrita |
+| IT-28 | mesmo `externalTransactionId` em **provedores diferentes** | duas apostas independentes, ambas processadas |
+| IT-29 | transação com `walletId` de outro jogador | `REJECTED WALLET_PLAYER_MISMATCH`, saldo intacto, auditado |
+| IT-30 | `playerId` fora do formato UUID (ex.: e-mail) | `400 VALIDATION_ERROR` |
+| IT-31 | `PlayerSessionPolicy` substituída por uma que nega | `BET` rejeitada com `CONCURRENT_GAME_NOT_ALLOWED`; nenhum débito (prova o ponto de extensão) |
 
 ## 5. Cenários — Concorrência e Crash (CT) — paralelismo real
 
@@ -174,7 +179,7 @@ Ferramenta: **k6** em container (gera p50/p95/p99 nativamente). Ambiente: `docke
 | Invariantes da Wallet | UT-W01..W08 |
 | Regras BET/WIN/LOSS/REFUND/ROLLBACK | UT-T06..T15, IT-08..11 |
 | Conflito de moeda | UT-M05, UT-W06 |
-| Key com payload divergente | UT-T08, IT-10 |
+| Key com payload divergente | UT-T08, IT-10, IT-27 |
 | Migrations e constraints | IT-01..06 |
 | Atomicidade wallet/ledger/inbox/outbox | IT-07 |
 | Inbox e redelivery | IT-12, CT-05 |

@@ -81,6 +81,7 @@ test/
   | `ROLLBACK` | `BET`, `WIN`, `REFUND` | inverso da referência |
 
   O mesmo lock, a mesma validação (provider, player, wallet, moeda, rodada, valor), a mesma regra de reversão única e a mesma auditoria. Um bug corrigido no fluxo vale para os dois.
+- **Políticas como portas (extensão sem mexer no núcleo):** `PlayerSessionPolicy.assertCanBet(playerId, gameId, roundId)` é chamada antes de cada `BET`. A implementação padrão permite tudo (D-19); uma futura implementação (ex.: consultando a plataforma) rejeitaria com `CONCURRENT_GAME_NOT_ALLOWED`, sem alterar o use case.
 - **Auditoria como efeito do use case:** cada decisão gera um `AuditRecord`, que é gravado pela porta `AuditTrail` na mesma Unit of Work. Não é log de aplicação: é dado de negócio, consultável e imutável.
 - **Erros tipados:** `DomainError` traz `failureCode` e categoria (`validation | conflict | business | transient | permanent`). Exceções não são usadas como fluxo de negócio esperado: a rejeição é um **resultado** persistido (`REJECTED`).
 - **Domínio sem relógio nem aleatoriedade:** `Clock` e `IdGenerator` são injetados, o que deixa os testes determinísticos.
@@ -168,6 +169,10 @@ CREATE UNIQUE INDEX uq_tx_single_reversal
 -- fila do worker de pending reference
 CREATE INDEX ix_tx_pending_reference ON wager_transactions (next_attempt_at)
   WHERE status = 'PENDING_REFERENCE';
+
+-- consultas antifraude por jogador/tempo (D-19, alertas do doc 06)
+CREATE INDEX ix_tx_player_time ON wager_transactions (player_id, created_at)
+  WHERE kind IN ('BET','REFUND','ROLLBACK');
 
 CREATE TABLE wallet_ledger_entries (
   id              uuid PRIMARY KEY,

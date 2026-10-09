@@ -130,6 +130,9 @@ O `trace_id` vai nos logs. No Grafana, um log de erro abre o trace correspondent
 3. Rejeições por `failureCode`
 4. Linha do tempo de uma transação (variável `transactionId` no painel)
 5. Reconciliação: wallets cujo saldo ≠ ledger (**tabela vazia = saudável**)
+6. Antifraude: jogadores com reversões em excesso e com apostas em jogos simultâneos
+
+Os alertas antifraude **não bloqueiam** transações (D-19): sinalizam para análise humana. O jogador aparece mascarado no e-mail.
 
 ```sql
 -- reversões por tipo e resultado no período do painel
@@ -138,6 +141,15 @@ FROM wager_transaction_audit a
 JOIN wager_transactions t ON t.id = a.transaction_id
 WHERE t.kind IN ('REFUND','ROLLBACK') AND $__timeFilter(a.occurred_at)
 GROUP BY 1,2,3 ORDER BY 4 DESC;
+
+-- antifraude: jogadores com apostas em mais de um jogo dentro de 2 minutos
+SELECT t1.player_id, count(DISTINCT t2.game_id) AS jogos
+FROM wager_transactions t1
+JOIN wager_transactions t2
+  ON t2.player_id = t1.player_id AND t2.kind = 'BET' AND t2.status = 'PROCESSED'
+ AND t2.created_at BETWEEN t1.created_at - interval '2 minutes' AND t1.created_at + interval '2 minutes'
+WHERE t1.kind = 'BET' AND t1.status = 'PROCESSED' AND $__timeFilter(t1.created_at)
+GROUP BY t1.player_id HAVING count(DISTINCT t2.game_id) > 1;
 
 -- wallets inconsistentes (deve retornar zero linhas)
 SELECT w.id, w.balance,
@@ -173,6 +185,8 @@ Três níveis, cada um com uma política de envio diferente para evitar fadiga d
 | Conflito de idempotência anormal | taxa de `payload_conflict` > 1% | 🟢 leve |
 | Referências pendentes acumulando | `pending_references` > 100 por 5 min | 🟢 leve |
 | Retries elevados | `retries_total` > 2× a média da última hora | 🟢 leve |
+| **Antifraude**: velocidade de reversões | um jogador com mais de 5 `REFUND`/`ROLLBACK` processados na última 1 h (SQL na auditoria) | 🟠 médio |
+| **Antifraude**: jogos simultâneos | um jogador com `BET` em mais de 1 `gameId` dentro de 2 min (SQL) | 🟠 médio |
 
 ## 8. Relatório de incidente por e-mail
 
