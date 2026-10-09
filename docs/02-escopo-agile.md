@@ -165,7 +165,7 @@ gantt
     I0 Fundação                              :done, i0, 0, 14
     I1 Domínio puro                          :done, i1, after i0, 23
     section Obrigatório
-    I2 Wallets + schema                      :i2, after i1, 14
+    I2 Wallets + schema                      :done, i2, after i1, 14
     I3 Processamento HTTP + métricas         :i3, after i2, 38
     I4 Outbox                                :i4, after i3, 11
     I5 SQS + referências pendentes           :i5, after i4, 24
@@ -179,7 +179,7 @@ gantt
 |---|---|---|---|
 | **I0** ✅ | E0-1..5, E7-2 | Esqueleto rodando | `docker compose up` + health verde + testes de integração |
 | **I1** ✅ | E1-1..6 + política de retry (§7.1) | Domínio provado por testes | 208 testes de unidade, teste de arquitetura |
-| **I2** | E2-1..4 | Wallets persistidas com constraints | criar/consultar wallet com eventos do `OPENING`; `UPDATE` no ledger falha |
+| **I2** ✅ | E2-1..4 | Wallets persistidas com constraints | criar/consultar wallet com eventos do `OPENING`; `UPDATE` no ledger falha |
 | **I3** | E3-1..9, **E7-1** | Transações via HTTP corretas sob concorrência, já medidas | 2× `BET 80`, 50 requisições idênticas, `/metrics` com status, duplicatas e conflitos de lock |
 | **I4** | E4-1..3 | Eventos confiáveis | processo morto entre commit e publish; evento chega; métrica de outbox lag |
 | **I5** | E5-1..4, E6-1..3 | Fila e fora de ordem | `ROLLBACK` antes da `BET` resolve sozinho; métricas de retries e DLQ |
@@ -187,6 +187,8 @@ gantt
 | **I7** | E9-1..3 | Entregável completo | README + ARCHITECTURE revisados; conformidade 100% |
 | **I8** | E2-5, E4-4, E7-4..9, E8-3, E8-4 | Diferenciais | `test:load`, Grafana, e-mail de incidente, antifraude |
 
+> **I2 entregue:** schema com todas as garantias no banco (inclui cadeia do ledger e consistência saldo × ledger no commit), `POST /wallets` com `OPENING` e eventos na outbox, consultas, ledger paginado, reconciliação e `/metrics` — 43 testes de integração.
+>
 > **I1 entregue:** 208 testes de unidade (cobertura do domínio ≈ 95% das linhas) + teste de arquitetura que impede o domínio de importar framework/ORM/SDK e de converter valores para `number`. UT-A01 (auditoria por transição) foi para a I3, porque a auditoria é efeito do use case, não do agregado.
 
 **Métricas obrigatórias nascem com cada peça** (§12), não no fim: I3 expõe `/metrics` com transações por status, duplicatas, conflitos de lock e latência; I4 acrescenta outbox lag; I5 acrescenta retries e DLQ. A I8 só adiciona painéis e alertas sobre o que já existe.
